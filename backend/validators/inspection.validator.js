@@ -1,0 +1,53 @@
+const { body } = require('express-validator');
+
+const assetsRules = [
+  body('assets')
+    .isArray({ min: 1 }).withMessage('Danh sách tài sản không được rỗng'),
+  body('assets.*.qr_code')
+    .notEmpty().withMessage('Mã QR không được để trống')
+    .isString()
+    .isLength({ max: 100 }).withMessage('Mã QR tối đa 100 ký tự'),
+  body('assets.*.condition')
+    .notEmpty().withMessage('Tình trạng không được để trống')
+    .isIn(['GOOD', 'BROKEN']).withMessage('Tình trạng phải là GOOD hoặc BROKEN'),
+  body('assets.*.note')
+    .optional()
+    .isString()
+    .isLength({ max: 500 }).withMessage('Ghi chú tối đa 500 ký tự'),
+];
+
+exports.staffPreview = [
+  body('room_id')
+    .notEmpty().withMessage('Vui lòng chọn phòng')
+    .isUUID().withMessage('Mã phòng không hợp lệ'),
+  ...assetsRules,
+];
+
+exports.staffConfirm = [
+  body('room_id')
+    .notEmpty().withMessage('Vui lòng chọn phòng')
+    .isUUID().withMessage('Mã phòng không hợp lệ'),
+  ...assetsRules,
+  body('notes')
+    .optional()
+    .isString()
+    .isLength({ max: 1000 }).withMessage('Ghi chú tối đa 1000 ký tự'),
+];
+
+exports.residentPreview = [
+  body('contract_id')
+    .notEmpty().withMessage('Vui lòng chọn hợp đồng')
+    .isUUID().withMessage('Mã hợp đồng không hợp lệ'),
+  ...assetsRules,
+];
+
+exports.residentConfirm = [
+  body('contract_id')
+    .notEmpty().withMessage('Vui lòng chọn hợp đồng')
+    .isUUID().withMessage('Mã hợp đồng không hợp lệ'),
+  ...assetsRules,
+  body('notes')
+    .optional()
+    .isString()
+    .isLength({ max: 1000 }).withMessage('Ghi chú tối đa 1000 ký tự'),
+];
