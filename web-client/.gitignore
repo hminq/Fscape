@@ -25,6 +25,7 @@ dist-ssr
 
 # en
 .env
+.env.*
 
 # videos
 public/video.mp4
