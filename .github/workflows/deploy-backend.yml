@@ -47,7 +47,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_SECRETS_MANAGER_SECRET_NAME: ${{ secrets.AWS_SECRETS_MANAGER_SECRET_NAME }}
+          AWS_SECRET_MANAGER_SECRET_NAME: ${{ secrets.AWS_SECRET_MANAGER_SECRET_NAME }}
           ECR_REGISTRY: ${{ secrets.AWS_ECR_REGISTRY }}
           ECR_API_REPOSITORY: ${{ secrets.AWS_ECR_REPO }}
           IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
@@ -55,12 +55,13 @@ jobs:
           host: ${{ secrets.AWS_EC2_HOST }}
           username: ${{ secrets.AWS_EC2_USERNAME }}
           key: ${{ secrets.AWS_EC2_SSH_KEY }}
-          envs: AWS_REGION,AWS_SECRETS_MANAGER_SECRET_NAME,ECR_REGISTRY,ECR_API_REPOSITORY,IMAGE_TAG
+          envs: AWS_REGION,AWS_SECRET_MANAGER_SECRET_NAME,ECR_REGISTRY,ECR_API_REPOSITORY,IMAGE_TAG
           script: |
             set -e
             cd ~/fscape
             test -f docker-compose.prod.yml
             test -f nginx.conf
+            test -n "$AWS_SECRET_MANAGER_SECRET_NAME"
             echo "Deploying $ECR_REGISTRY/$ECR_API_REPOSITORY:$IMAGE_TAG"
             aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
             docker compose -f docker-compose.prod.yml pull webapi cron

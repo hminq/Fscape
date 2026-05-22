@@ -40,9 +40,9 @@ async function loadRuntimeEnv() {
     return;
   }
 
-  const secretName = process.env.AWS_SECRETS_MANAGER_SECRET_NAME;
+  const secretName = process.env.AWS_SECRET_MANAGER_SECRET_NAME;
   if (!secretName) {
-    throw new Error("AWS_SECRETS_MANAGER_SECRET_NAME is required in production");
+    throw new Error("AWS_SECRET_MANAGER_SECRET_NAME is required in production");
   }
 
   const client = new SecretsManagerClient({
