@@ -1,0 +1,70 @@
+name: Deploy Backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ github.sha }}
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push backend image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_API_REPOSITORY: ${{ secrets.AWS_ECR_REPO }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build --platform linux/amd64 -f backend/Dockerfile -t $ECR_REGISTRY/$ECR_API_REPOSITORY:$IMAGE_TAG backend
+          docker push $ECR_REGISTRY/$ECR_API_REPOSITORY:$IMAGE_TAG
+
+  deploy-prod:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to production EC2
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_SECRETS_MANAGER_SECRET_NAME: ${{ secrets.AWS_SECRETS_MANAGER_SECRET_NAME }}
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr_registry }}
+          ECR_API_REPOSITORY: ${{ secrets.AWS_ECR_REPO }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        with:
+          host: ${{ secrets.AWS_EC2_HOST }}
+          username: ${{ secrets.AWS_EC2_USERNAME }}
+          key: ${{ secrets.AWS_EC2_SSH_KEY }}
+          envs: AWS_REGION,AWS_SECRETS_MANAGER_SECRET_NAME,ECR_REGISTRY,ECR_API_REPOSITORY,IMAGE_TAG
+          script: |
+            set -e
+            cd ~/fscape-api
+            test -f docker-compose.prod.yml
+            test -f nginx.conf
+            echo "Deploying $ECR_REGISTRY/$ECR_API_REPOSITORY:$IMAGE_TAG"
+            aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+            docker compose -f docker-compose.prod.yml pull webapi cron
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker image prune -f
