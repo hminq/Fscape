@@ -193,63 +193,7 @@ async function syncKnowledge() {
   totalUpserted += facVectors.length;
   console.log(`[KnowledgeSync] Facilities: ${facVectors.length}`);
 
-  // 5) Contracts (active lifecycle states)
-  const contracts = await sequelize.query(
-    `SELECT c.id, c.contract_number, c.start_date, c.end_date,
-            c.base_rent, c.deposit_amount, c.status,
-            r.room_number, b.name AS building_name,
-            CONCAT(u.first_name, ' ', u.last_name) AS customer_name, u.email AS customer_email
-     FROM contracts c
-     JOIN rooms r ON r.id = c.room_id
-     JOIN buildings b ON b.id = r.building_id
-     JOIN users u ON u.id = c.customer_id
-     WHERE c.status IN ('PENDING_CUSTOMER_SIGNATURE','PENDING_MANAGER_SIGNATURE','PENDING_FIRST_PAYMENT','PENDING_CHECK_IN','ACTIVE','EXPIRING_SOON')`,
-    { type: QueryTypes.SELECT }
-  );
-
-  const contractVectors = [];
-  for (const c of contracts) {
-    const text = buildContractChunk(c);
-    const embedding = await embedText(text);
-    contractVectors.push({
-      id: `contract-${c.id}`,
-      values: embedding,
-      metadata: { type: 'contract', id: c.id, content: text }
-    });
-  }
-  await upsertBatch(index, contractVectors);
-  totalUpserted += contractVectors.length;
-  console.log(`[KnowledgeSync] Contracts: ${contractVectors.length}`);
-
-  // 6) Bookings (active states)
-  const bookings = await sequelize.query(
-    `SELECT bk.id, bk.booking_number, bk.check_in_date, bk.duration_months,
-            bk.deposit_amount, bk.status,
-            r.room_number, b.name AS building_name,
-            CONCAT(u.first_name, ' ', u.last_name) AS customer_name, u.email AS customer_email
-     FROM bookings bk
-     JOIN rooms r ON r.id = bk.room_id
-     JOIN buildings b ON b.id = r.building_id
-     JOIN users u ON u.id = bk.customer_id
-     WHERE bk.status IN ('PENDING', 'DEPOSIT_PAID')`,
-    { type: QueryTypes.SELECT }
-  );
-
-  const bookingVectors = [];
-  for (const bk of bookings) {
-    const text = buildBookingChunk(bk);
-    const embedding = await embedText(text);
-    bookingVectors.push({
-      id: `booking-${bk.id}`,
-      values: embedding,
-      metadata: { type: 'booking', id: bk.id, content: text }
-    });
-  }
-  await upsertBatch(index, bookingVectors);
-  totalUpserted += bookingVectors.length;
-  console.log(`[KnowledgeSync] Bookings: ${bookingVectors.length}`);
-
-  // 7) Universities
+  // 5) Universities
   const universities = await sequelize.query(
     `SELECT u.id, u.name, u.address, u.is_active, l.name as location_name,
             (SELECT STRING_AGG(DISTINCT b.name, ', ')
