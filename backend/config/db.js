@@ -27,14 +27,26 @@ const { Sequelize } = require("sequelize")
 //       )
 
 // Runtime DB configuration.
-const dbName = process.env.DB_NAME || process.env.POSTGRES_DB
-const dbUser = process.env.DB_USER || process.env.POSTGRES_USER
-const dbPassword = process.env.DB_PASSWORD || process.env.POSTGRES_PASSWORD
-const dbHost = process.env.DB_HOST || (process.env.POSTGRES_DB ? "db" : "localhost")
-const dbPort = process.env.DB_PORT || 5432
+const cleanEnv = (value) => {
+  if (value === undefined || value === null) return undefined
+  const text = String(value).trim()
+  if (!text || text === "null" || text === "undefined") return undefined
+  return text
+}
 
-const sequelize = process.env.DATABASE_URL
-  ? new Sequelize(process.env.DATABASE_URL, {
+const databaseUrl = cleanEnv(process.env.DATABASE_URL)
+const dbName = cleanEnv(process.env.DB_NAME) || cleanEnv(process.env.POSTGRES_DB)
+const dbUser = cleanEnv(process.env.DB_USER) || cleanEnv(process.env.POSTGRES_USER)
+const dbPassword = cleanEnv(process.env.DB_PASSWORD) || cleanEnv(process.env.POSTGRES_PASSWORD)
+const dbHost = cleanEnv(process.env.DB_HOST) || (cleanEnv(process.env.POSTGRES_DB) ? "db" : "localhost")
+const dbPort = cleanEnv(process.env.DB_PORT) || 5432
+
+if (!databaseUrl && (!dbName || !dbUser)) {
+  throw new Error("Database configuration missing. Set DATABASE_URL or DB_NAME/DB_USER/DB_PASSWORD.")
+}
+
+const sequelize = databaseUrl
+  ? new Sequelize(databaseUrl, {
       dialect: "postgres",
       logging: false,
       dialectOptions: {
