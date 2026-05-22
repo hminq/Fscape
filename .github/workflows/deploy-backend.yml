@@ -60,7 +60,7 @@ jobs:
           envs: AWS_REGION,AWS_SECRETS_MANAGER_SECRET_NAME,ECR_REGISTRY,ECR_API_REPOSITORY,IMAGE_TAG
           script: |
             set -e
-            cd ~/fscape-api
+            cd ~/fscape
             test -f docker-compose.prod.yml
             test -f nginx.conf
             echo "Deploying $ECR_REGISTRY/$ECR_API_REPOSITORY:$IMAGE_TAG"
