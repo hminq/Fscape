@@ -3,10 +3,8 @@ const getPayOS = require('../utils/payos');
 const payosConfig = require('../config/payos.config');
 const contractService = require('./contract.service');
 const { parseUTCDate } = require('../utils/date.util');
-const {
-    sendPaymentReceivedEmail,
-    sendWelcomeCheckInEmail
-} = require('../utils/mail.util');
+const { enqueueEmailJob } = require('./emailQueue.service');
+const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
 
 const PAYOS_GATEWAY_ERROR = {
     status: 502,
@@ -33,6 +31,11 @@ const normalizePayosCreateError = (error, context = {}) => {
 };
 
 const formatCurrency = (amount) => `${Number(amount).toLocaleString('vi-VN')}đ`;
+
+const enqueueEmailJobSafely = (type, payload, logContext) => {
+    enqueueEmailJob(type, payload)
+        .catch(err => console.error(`[PaymentService] Failed to enqueue ${logContext}:`, err));
+};
 
 const formatDateTime = (date) => {
     if (!date) return '';
@@ -216,17 +219,15 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
                     const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
                     paymentReceiptEmail = {
                         email: customer.email,
-                        payload: {
-                            customerName,
-                            paymentNumber: payment.payment_number,
-                            paymentId: payment.id,
-                            paymentTypeLabel: getPaymentTypeLabel(payment.payment_type),
-                            referenceNumber: booking.booking_number,
-                            roomNumber: booking.room?.room_number || '',
-                            buildingName: booking.room?.building?.name || '',
-                            amount: formatCurrency(payment.amount),
-                            paidAt: formatDateTime(payment.paid_at),
-                        }
+                        customerName,
+                        paymentNumber: payment.payment_number,
+                        paymentId: payment.id,
+                        paymentTypeLabel: getPaymentTypeLabel(payment.payment_type),
+                        referenceNumber: booking.booking_number,
+                        roomNumber: booking.room?.room_number || '',
+                        buildingName: booking.room?.building?.name || '',
+                        amount: formatCurrency(payment.amount),
+                        paidAt: formatDateTime(payment.paid_at),
                     };
                 }
             }
@@ -258,17 +259,15 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
                     const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
                     paymentReceiptEmail = {
                         email: customer.email,
-                        payload: {
-                            customerName,
-                            paymentNumber: payment.payment_number,
-                            paymentId: payment.id,
-                            paymentTypeLabel: getPaymentTypeLabel(payment.payment_type),
-                            referenceNumber: invoice.invoice_number,
-                            roomNumber: contract?.room?.room_number || '',
-                            buildingName: contract?.room?.building?.name || '',
-                            amount: formatCurrency(payment.amount),
-                            paidAt: formatDateTime(payment.paid_at),
-                        }
+                        customerName,
+                        paymentNumber: payment.payment_number,
+                        paymentId: payment.id,
+                        paymentTypeLabel: getPaymentTypeLabel(payment.payment_type),
+                        referenceNumber: invoice.invoice_number,
+                        roomNumber: contract?.room?.room_number || '',
+                        buildingName: contract?.room?.building?.name || '',
+                        amount: formatCurrency(payment.amount),
+                        paidAt: formatDateTime(payment.paid_at),
                     };
                 }
 
@@ -297,14 +296,12 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
                                 const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
                                 welcomeCheckInEmail = {
                                     email: customer.email,
-                                    payload: {
-                                        customerName,
-                                        contractNumber: contract.contract_number,
-                                        contractId: contract.id,
-                                        roomNumber: contract.room?.room_number || '',
-                                        buildingName: contract.room?.building?.name || '',
-                                        startDate: formatDate(contract.start_date),
-                                    }
+                                    customerName,
+                                    contractNumber: contract.contract_number,
+                                    contractId: contract.id,
+                                    roomNumber: contract.room?.room_number || '',
+                                    buildingName: contract.room?.building?.name || '',
+                                    startDate: formatDate(contract.start_date),
                                 };
                             }
                         }
@@ -321,13 +318,19 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
         }
 
         if (paymentReceiptEmail) {
-            sendPaymentReceivedEmail(paymentReceiptEmail.email, paymentReceiptEmail.payload)
-                .catch(err => console.error('[PaymentService] Failed to send payment receipt email:', err));
+            enqueueEmailJobSafely(
+                EMAIL_JOB_TYPES.PAYMENT_RECEIVED,
+                paymentReceiptEmail,
+                'payment receipt email'
+            );
         }
 
         if (welcomeCheckInEmail) {
-            sendWelcomeCheckInEmail(welcomeCheckInEmail.email, welcomeCheckInEmail.payload)
-                .catch(err => console.error('[PaymentService] Failed to send welcome check-in email:', err));
+            enqueueEmailJobSafely(
+                EMAIL_JOB_TYPES.WELCOME_CHECK_IN,
+                welcomeCheckInEmail,
+                'welcome check-in email'
+            );
         }
 
         return true;

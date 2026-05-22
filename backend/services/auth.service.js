@@ -3,7 +3,8 @@ const { AuthProvider } = require("../models/authProvider.model");
 const { sequelize } = require("../config/db");
 const { generateOtp, findValidOtp, consumeOtp, OTP_TYPES } = require("../utils/otp.util");
 const { hashPassword, comparePassword } = require("../utils/password.util");
-const { sendOtpMail } = require("../utils/mail.util");
+const { enqueueEmailJob } = require("./emailQueue.service");
+const { EMAIL_JOB_TYPES } = require("../constants/emailJobs");
 const { generateAccessToken } = require("../utils/token.util");
 const { verifyGoogleIdToken } = require("../utils/google.util");
 
@@ -11,6 +12,10 @@ const normalizeEmail = (email) => String(email ?? "").trim().toLowerCase();
 const normalizeName = (value) => {
   const trimmed = String(value ?? "").trim();
   return trimmed || null;
+};
+
+const queueOtpEmail = async (email, code) => {
+  await enqueueEmailJob(EMAIL_JOB_TYPES.SEND_OTP, { email, code });
 };
 
 const rethrowAuthPersistenceError = (error, fallbackMessage) => {
@@ -60,7 +65,7 @@ class AuthService {
     }
 
     const otp = await generateOtp(normalizedEmail, "EMAIL_VERIFICATION");
-    await sendOtpMail(normalizedEmail, otp.code);
+    await queueOtpEmail(normalizedEmail, otp.code);
 
     return { message: "Đã gửi mã OTP đến email" };
   }
@@ -225,7 +230,7 @@ class AuthService {
   static async forgotPassword(email) {
     const normalizedEmail = normalizeEmail(email);
     const otp = await generateOtp(normalizedEmail, "PASSWORD_RESET");
-    await sendOtpMail(normalizedEmail, otp.code);
+    await queueOtpEmail(normalizedEmail, otp.code);
     return { message: "Đã gửi mã OTP" };
   }
 
@@ -267,7 +272,7 @@ class AuthService {
 
     if (!user) {
       const otp = await generateOtp(email, OTP_TYPES.EMAIL_VERIFICATION);
-      await sendOtpMail(email, otp.code);
+      await queueOtpEmail(email, otp.code);
       return { message: "Đã gửi mã OTP đến email", name };
     } else {
       const existingGoogleAuth = await AuthProvider.findOne({
