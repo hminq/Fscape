@@ -5,6 +5,12 @@ npm-debug.log
 !.env.example
 .git
 .gitignore
+.github
+.dockerignore
+docker-compose*.yml
+compose*.yml
+nginx.conf
+manual_deploy.txt
 dist
 coverage
 tests

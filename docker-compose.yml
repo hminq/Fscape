@@ -1,0 +1,61 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: fscape-local-postgres
+    env_file:
+      - ./backend/.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - fscape-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  webapi:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fscape-local-webapi
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    command: npm start
+    volumes:
+      - ./backend:/app
+      - fscape-backend-node-modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+
+  cron:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fscape-local-cron
+    restart: unless-stopped
+    command: npm run start:cron
+    volumes:
+      - ./backend:/app
+      - fscape-backend-node-modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: development
+
+volumes:
+  fscape-postgres:
+    external: true
+    name: fscape-postgres
+  fscape-backend-node-modules:
+    name: fscape-backend-node-modules
