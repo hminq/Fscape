@@ -53,6 +53,24 @@ services:
     environment:
       NODE_ENV: development
 
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fscape-local-worker
+    restart: unless-stopped
+    command: npm run start:worker
+    volumes:
+      - ./backend:/app
+      - fscape-backend-node-modules:/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      NODE_ENV: development
+
 volumes:
   fscape-postgres:
     external: true
