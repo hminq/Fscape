@@ -1,4 +1,5 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || "";
+const shouldSkipNgrokWarning = import.meta.env.DEV && API_BASE_URL.includes("ngrok");
 
 function resolveUrl(path) {
   if (!path || path.startsWith("http://") || path.startsWith("https://")) {
@@ -16,9 +17,11 @@ function getToken() {
 export async function apiRequest(path, options = {}) {
   const { method = "GET", body, headers: custom, withAuth = true, ...rest } = options;
   const headers = {
-    "ngrok-skip-browser-warning": "true",
     ...(custom || {}),
   };
+  if (shouldSkipNgrokWarning) {
+    headers["ngrok-skip-browser-warning"] = "true";
+  }
   const isFormData = body instanceof FormData;
 
   if (body && !isFormData && !headers["Content-Type"]) {

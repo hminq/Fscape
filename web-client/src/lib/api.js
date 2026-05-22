@@ -1,12 +1,20 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL;
+const shouldSkipNgrokWarning = import.meta.env.DEV && BASE_URL?.includes("ngrok");
 
 async function request(endpoint, options = {}) {
   const token = localStorage.getItem("token");
   const headers = {
-    "Content-Type": "application/json",
     "ngrok-skip-browser-warning": "true",
     ...options.headers,
   };
+
+  if (!shouldSkipNgrokWarning) {
+    delete headers["ngrok-skip-browser-warning"];
+  }
+
+  if (options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
 
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -49,9 +57,10 @@ async function request(endpoint, options = {}) {
 
 async function uploadFile(endpoint, formData) {
   const token = localStorage.getItem("token");
-  const headers = {
-    "ngrok-skip-browser-warning": "true",
-  };
+  const headers = {};
+  if (shouldSkipNgrokWarning) {
+    headers["ngrok-skip-browser-warning"] = "true";
+  }
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
