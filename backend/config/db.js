@@ -1,3 +1,4 @@
+require("./env")
 const { Sequelize } = require("sequelize")
 // for testing
 // const sequelize = process.env.NODE_ENV === "test"
@@ -26,6 +27,12 @@ const { Sequelize } = require("sequelize")
 //       )
 
 // Runtime DB configuration.
+const dbName = process.env.DB_NAME || process.env.POSTGRES_DB
+const dbUser = process.env.DB_USER || process.env.POSTGRES_USER
+const dbPassword = process.env.DB_PASSWORD || process.env.POSTGRES_PASSWORD
+const dbHost = process.env.DB_HOST || (process.env.POSTGRES_DB ? "db" : "localhost")
+const dbPort = process.env.DB_PORT || 5432
+
 const sequelize = process.env.DATABASE_URL
   ? new Sequelize(process.env.DATABASE_URL, {
       dialect: "postgres",
@@ -39,12 +46,12 @@ const sequelize = process.env.DATABASE_URL
       }
     })
   : new Sequelize(
-      process.env.DB_NAME,
-      process.env.DB_USER,
-      process.env.DB_PASSWORD,
+      dbName,
+      dbUser,
+      dbPassword,
       {
-        host: process.env.DB_HOST || "localhost",
-        port: process.env.DB_PORT || 5432,
+        host: dbHost,
+        port: dbPort,
         dialect: "postgres",
         logging: false,
         dialectOptions: {

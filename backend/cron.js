@@ -1,24 +1,21 @@
 const { loadRuntimeEnv } = require("./config/env");
 
-async function startServer() {
+async function startCronWorker() {
   try {
     await loadRuntimeEnv();
 
-    const app = require("./app");
     const { connectDB } = require("./config/db");
     const { initModels } = require("./models/initModels");
-    const PORT = process.env.PORT || 3000;
+    const { initCronJobs } = require("./jobs");
 
     await connectDB();
     initModels();
-
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running at Port:${PORT}`);
-    });
+    initCronJobs();
+    console.log("Cron worker started");
   } catch (error) {
-    console.error("Server startup error:", error);
+    console.error("Cron worker startup error:", error);
     process.exit(1);
   }
 }
 
-startServer();
+startCronWorker();

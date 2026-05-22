@@ -85,8 +85,7 @@ dist
 
 # Gatsby files
 .cache/
-# Comment in the public line in if your project uses Gatsby and not Next.js
-# https://nextjs.org/blog/next-9-1#public-directory-support
+# Gatsby public directory (uncomment if using Gatsby instead of Next.js)
 # public
 
 # vuepress build output
@@ -144,3 +143,5 @@ vite.config.ts.timestamp-*
 .vite/
 
 manual_deploy.txt
+docker-compose.prod.yml
+nginx.conf

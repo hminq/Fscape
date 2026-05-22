@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
+    "start:cron": "node cron.js",
     "dev": "nodemon server.js",
+    "dev:cron": "nodemon cron.js",
     "test": "cross-env NODE_ENV=test jest --runInBand --detectOpenHandles"
   },
   "keywords": [],
@@ -14,6 +16,7 @@
   "type": "commonjs",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1024.0",
+    "@aws-sdk/client-secrets-manager": "^3.1052.0",
     "@google/generative-ai": "^0.24.1",
     "@payos/node": "^2.0.5",
     "@pinecone-database/pinecone": "^7.1.0",
