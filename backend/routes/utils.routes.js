@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { getDistanceKm } = require('../utils/geo.util');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
 const { openRouteService } = getRuntimeConfig();
 const ORS_API_KEY = openRouteService.apiKey;
@@ -11,12 +13,12 @@ const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions/driving-car
  * GET /api/utils/distance?lat1=...&lng1=...&lat2=...&lng2=...
  * Returns road distance (via OpenRouteService) with Haversine fallback.
  */
-router.get('/distance', async (req, res) => {
+router.get('/distance', asyncHandler(async (req, res) => {
     const { lat1, lng1, lat2, lng2 } = req.query;
 
     const coords = [lat1, lng1, lat2, lng2].map(Number);
     if (coords.some(isNaN)) {
-        return res.status(400).json({ message: 'Thiếu hoặc sai tọa độ (lat1, lng1, lat2, lng2).' });
+        throw new AppError('Vui lòng nhập tọa độ hợp lệ', 400, 'INVALID_COORDINATES');
     }
 
     const [cLat1, cLng1, cLat2, cLng2] = coords;
@@ -51,6 +53,6 @@ router.get('/distance', async (req, res) => {
         duration_min: null,
         source: 'haversine',
     });
-});
+}));
 
 module.exports = router;

@@ -1,82 +1,56 @@
 const AuthService = require('../services/auth.service');
+const asyncHandler = require('../utils/asyncHandler');
 
-const getStatus = (error, fallbackStatus) => error.status || fallbackStatus;
-const getMessage = (error, fallbackMessage) => error.message || fallbackMessage;
-
-exports.signup = async (req, res) => {
-  try {
+exports.signup = asyncHandler(async (req, res) => {
     const { email, password } = req.body;
     const result = await AuthService.signup(email, password);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Đăng ký không thành công') });
-  }
-};
 
-exports.verifySignup = async (req, res) => {
-  try {
+});
+
+exports.verifySignup = asyncHandler(async (req, res) => {
     const { email, password, otp, first_name, last_name } = req.body;
     const user = await AuthService.verifySignup(email, password, otp, first_name, last_name);
     res.status(201).json(user);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Xác minh đăng ký không thành công') });
-  }
-};
 
-exports.signin = async (req, res) => {
-  try {
+});
+
+exports.signin = asyncHandler(async (req, res) => {
     const token = await AuthService.signin(req.body.email, req.body.password);
     res.json(token);
-  } catch (e) {
-    res.status(getStatus(e, 401)).json({ message: getMessage(e, 'Đăng nhập không thành công') });
-  }
-};
 
-exports.appLogin = async (req, res) => {
-  try {
+});
+
+exports.appLogin = asyncHandler(async (req, res) => {
     const result = await AuthService.appLogin(req.body.email, req.body.password);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 401)).json({ message: getMessage(e, 'Đăng nhập không thành công') });
-  }
-};
 
-exports.forgotPassword = async (req, res) => {
-  try {
+});
+
+exports.forgotPassword = asyncHandler(async (req, res) => {
     const result = await AuthService.forgotPassword(req.body.email);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Không thể gửi mã OTP') });
-  }
-};
 
-exports.resetPassword = async (req, res) => {
-  try {
+});
+
+exports.resetPassword = asyncHandler(async (req, res) => {
     const { email, otp, new_password } = req.body;
     const result = await AuthService.resetPassword(email, otp, new_password);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Đặt lại mật khẩu không thành công') });
-  }
-};
+
+});
 
 // Google sign-in (two-step)
-exports.googleLogin = async (req, res) => {
-  try {
+exports.googleLogin = asyncHandler(async (req, res) => {
     const { id_token } = req.body;
     const result = await AuthService.googleSignInStep1(id_token);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Đăng nhập Google không thành công') });
-  }
-};
 
-exports.googleVerify = async (req, res) => {
-  try {
+});
+
+exports.googleVerify = asyncHandler(async (req, res) => {
     const { id_token, otp } = req.body;
     const result = await AuthService.googleSignInStep2(id_token, otp);
     res.json(result);
-  } catch (e) {
-    res.status(getStatus(e, 400)).json({ message: getMessage(e, 'Xác minh Google không thành công') });
-  }
-};
+
+});

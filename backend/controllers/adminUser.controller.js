@@ -1,49 +1,39 @@
 const AdminUserService = require('../services/adminUser.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-exports.createUser = async (req, res) => {
-  try {
+
+exports.createUser = asyncHandler(async (req, res) => {
     const user = await AdminUserService.createInternalUser(req.body);
     return res.status(201).json(user);
-  } catch (err) {
-    return res.status(400).json({ message: err.message });
-  }
-};
 
-exports.listUsers = async (req, res) => {
-  try {
+});
+
+exports.listUsers = asyncHandler(async (req, res) => {
     const users = await AdminUserService.getUsers(req.user, req.query);
     return res.json({ data: users });
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
 
-exports.getUserStats = async (req, res) => {
-  try {
+});
+
+exports.getUserStats = asyncHandler(async (req, res) => {
     const stats = await AdminUserService.getUserStats(req.user);
     return res.json({ data: stats });
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
 
-exports.getAvailableManagers = async (req, res) => {
-  try {
+});
+
+exports.getAvailableManagers = asyncHandler(async (req, res) => {
     const managers = await AdminUserService.getAvailableManagers();
     return res.json({ data: managers });
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
 
-exports.updateUserStatus = async (req, res) => {
-  try {
+});
+
+exports.updateUserStatus = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { is_active } = req.body;
 
     if (typeof is_active !== 'boolean') {
       console.warn('[AdminUserController] updateUserStatus: is_active is not boolean');
-      return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+      throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_INPUT');
     }
 
     const user = await AdminUserService.updateUserStatus(id, is_active);
@@ -55,19 +45,16 @@ exports.updateUserStatus = async (req, res) => {
         is_active: user.is_active,
       },
     });
-  } catch (err) {
-    return res.status(400).json({ message: err.message });
-  }
-};
 
-exports.assignBuilding = async (req, res) => {
-  try {
+});
+
+exports.assignBuilding = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { building_id } = req.body;
 
     if (building_id !== null && typeof building_id !== 'string') {
       console.warn('[AdminUserController] assignBuilding: building_id must be UUID string or null');
-      return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+      throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_INPUT');
     }
 
     const user = await AdminUserService.assignBuilding(id, building_id);
@@ -80,17 +67,12 @@ exports.assignBuilding = async (req, res) => {
         role: user.role,
       },
     });
-  } catch (err) {
-    return res.status(400).json({ message: err.message });
-  }
-};
 
-exports.resetPassword = async (req, res) => {
-  try {
+});
+
+exports.resetPassword = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const result = await AdminUserService.resetPassword(id);
     return res.json(result);
-  } catch (err) {
-    return res.status(400).json({ message: err.message });
-  }
-};
+
+});

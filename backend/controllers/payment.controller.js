@@ -1,61 +1,52 @@
 const { sequelize } = require("../config/db");
 const paymentService = require("../services/payment.service");
 const { getRuntimeConfig } = require("../config/runtimeConfig");
+const asyncHandler = require('../utils/asyncHandler');
 
-const getMyPayments = async (req, res) => {
+const getMyPayments = asyncHandler(async (req, res) => {
     const { Payment, Booking, Room, Building } = sequelize.models;
     const userId = req.user.id;
 
-    try {
-        const payments = await Payment.findAll({
-            where: { user_id: userId },
-            include: [
-                {
-                    model: Booking,
-                    as: 'booking',
-                    include: [
-                        {
-                            model: Room,
-                            as: 'room',
-                            include: [{ model: Building, as: 'building' }]
-                        }
-                    ]
-                }
-            ],
-            order: [['created_at', 'DESC']]
-        });
+    const payments = await Payment.findAll({
+        where: { user_id: userId },
+        include: [
+            {
+                model: Booking,
+                as: 'booking',
+                include: [
+                    {
+                        model: Room,
+                        as: 'room',
+                        include: [{ model: Building, as: 'building' }]
+                    }
+                ]
+            }
+        ],
+        order: [['created_at', 'DESC']]
+    });
 
-        return res.status(200).json({
-            data: payments
-        });
-    } catch (error) {
-        return res.status(500).json({ message: error.message || "Internal Server Error" });
-    }
-};
+    return res.status(200).json({
+        data: payments
+    });
+});
 
 // PayOS handlers.
 
-const createBookingPaymentUrlPayOS = async (req, res) => {
-    try {
+const createBookingPaymentUrlPayOS = asyncHandler(async (req, res) => {
         const userId = req.user.id;
         const { booking_id } = req.body;
         const result = await paymentService.createBookingPaymentUrlPayOS(userId, booking_id);
         return res.status(200).json(result);
-    } catch (error) {
-        return res.status(error.status || 500).json({ message: error.message || "Lỗi tạo thanh toán" });
-    }
-};
 
-const createInvoicePaymentUrlPayOS = async (req, res) => {
-    try {
+});
+
+const createInvoicePaymentUrlPayOS = asyncHandler(async (req, res) => {
         const userId = req.user.id;
         const { invoice_id } = req.body;
         const result = await paymentService.createInvoicePaymentUrlPayOS(userId, invoice_id);
         return res.status(200).json(result);
-    } catch (error) {
-        return res.status(error.status || 500).json({ message: error.message || "Lỗi tạo thanh toán" });
-    }
-};
+
+});
 
 const payosWebhook = async (req, res) => {
     try {

@@ -1,11 +1,9 @@
 const { ROLES } = require('../constants/roles');
+const AppError = require('../utils/AppError');
 
 module.exports = function requireAdmin(req, res, next) {
-  console.log('req.user =', req.user);
   if (!req.user || req.user.role !== ROLES.ADMIN) {
-    return res.status(403).json({
-      message: 'Cần quyền quản trị viên',
-    });
+    return next(new AppError('Cần quyền quản trị viên', 403, 'ADMIN_REQUIRED'));
   }
   next();
 };

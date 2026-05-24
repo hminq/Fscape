@@ -1,14 +1,13 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
+const AppError = require('../utils/AppError');
 
 module.exports = async function authJwt(req, res, next) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({
-      message: 'Thiếu hoặc sai định dạng header Authorization',
-    });
+    return next(new AppError('Bạn cần đăng nhập để tiếp tục', 401, 'UNAUTHORIZED'));
   }
 
   const token = authHeader.split(' ')[1];
@@ -19,13 +18,11 @@ module.exports = async function authJwt(req, res, next) {
 
     const user = await User.findByPk(payload.sub);
     if (!user) {
-      return res.status(401).json({ message: 'Không tìm thấy người dùng' });
+      return next(new AppError('Bạn cần đăng nhập để tiếp tục', 401, 'UNAUTHORIZED'));
     }
 
     if (!user.is_active) {
-      return res.status(403).json({
-        message: 'Tài khoản đã bị vô hiệu hóa',
-      });
+      return next(new AppError('Tài khoản đã bị vô hiệu hóa', 403, 'ACCOUNT_DISABLED'));
     }
 
     req.user = {
@@ -35,9 +32,7 @@ module.exports = async function authJwt(req, res, next) {
     };
 
     next();
-  } catch (err) {
-    return res.status(401).json({
-      message: 'Token không hợp lệ hoặc đã hết hạn',
-    });
+  } catch {
+    return next(new AppError('Phiên đăng nhập không hợp lệ hoặc đã hết hạn', 401, 'INVALID_TOKEN'));
   }
 };

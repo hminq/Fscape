@@ -1,36 +1,25 @@
 const facilityService = require('../services/facility.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-const handleError = (res, err) => {
-    console.error('[FacilityController]', err);
-    const status = err.status || 500;
-    const message = err.message || 'Lỗi hệ thống';
-    return res.status(status).json({ message });
-};
 
-const getAllFacilities = async (req, res) => {
-    try {
+const getAllFacilities = asyncHandler(async (req, res) => {
         const result = await facilityService.getAllFacilities(req.query, req.user);
         return res.status(200).json({ ...result });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
 
-const getFacilityById = async (req, res) => {
-    try {
+});
+
+const getFacilityById = asyncHandler(async (req, res) => {
         const facility = await facilityService.getFacilityById(req.params.id);
         return res.status(200).json({ data: facility });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
 
-const createFacility = async (req, res) => {
-    try {
+});
+
+const createFacility = asyncHandler(async (req, res) => {
         const { name, is_active } = req.body;
 
         if (!name) {
-            return res.status(400).json({ message: 'Tên tiện ích là bắt buộc' });
+            throw new AppError('Tên tiện ích là bắt buộc', 400, 'FACILITY_NAME_REQUIRED');
         }
 
         const facility = await facilityService.createFacility({
@@ -39,32 +28,24 @@ const createFacility = async (req, res) => {
         });
 
         return res.status(201).json({ message: 'Tạo tiện ích thành công', data: facility });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
 
-const updateFacility = async (req, res) => {
-    try {
+});
+
+const updateFacility = asyncHandler(async (req, res) => {
         const { name, is_active } = req.body;
         let updatedData = { name, is_active };
 
         const facility = await facilityService.updateFacility(req.params.id, updatedData);
 
         return res.status(200).json({ message: 'Cập nhật tiện ích thành công', data: facility });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
 
-const deleteFacility = async (req, res) => {
-    try {
+});
+
+const deleteFacility = asyncHandler(async (req, res) => {
         const result = await facilityService.deleteFacility(req.params.id);
         return res.status(200).json({ ...result });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 module.exports = {
     getAllFacilities,

@@ -1,59 +1,49 @@
 const universityService = require('../services/university.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-const handleError = (res, err) => {
-    console.error('[UniversityController]', err);
-    return res.status(err.status || 500).json({ message: err.message || 'Lỗi hệ thống' });
-};
 
-const getAllUniversities = async (req, res) => {
-    try {
+const getAllUniversities = asyncHandler(async (req, res) => {
         const result = await universityService.getAllUniversities(req.query);
         return res.status(200).json({ ...result });
-    } catch (err) { return handleError(res, err); }
-};
 
-const getUniversityById = async (req, res) => {
-    try {
+});
+
+const getUniversityById = asyncHandler(async (req, res) => {
         const university = await universityService.getUniversityById(req.params.id);
         return res.status(200).json({ data: university });
-    } catch (err) { return handleError(res, err); }
-};
 
-const createUniversity = async (req, res) => {
-    try {
+});
+
+const createUniversity = asyncHandler(async (req, res) => {
         const { name, location_id } = req.body;
         if (!name || !location_id) {
             console.warn('[UniversityController] createUniversity: missing name or location_id');
-            return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+            throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_INPUT');
         }
         const university = await universityService.createUniversity(req.body);
         return res.status(201).json({ data: university });
-    } catch (err) { return handleError(res, err); }
-};
 
-const updateUniversity = async (req, res) => {
-    try {
+});
+
+const updateUniversity = asyncHandler(async (req, res) => {
         const university = await universityService.updateUniversity(req.params.id, req.body);
         return res.status(200).json({ data: university });
-    } catch (err) { return handleError(res, err); }
-};
 
-const deleteUniversity = async (req, res) => {
-    try {
+});
+
+const deleteUniversity = asyncHandler(async (req, res) => {
         const result = await universityService.deleteUniversity(req.params.id);
         return res.status(200).json({ ...result });
-    } catch (err) { return handleError(res, err); }
-};
 
-const toggleUniversityStatus = async (req, res) => {
-    try {
+});
+
+const toggleUniversityStatus = asyncHandler(async (req, res) => {
         const { is_active } = req.body;
 
         if (typeof is_active !== 'boolean') {
             console.warn('[UniversityController] toggleUniversityStatus: is_active is not boolean');
-            return res.status(400).json({
-                message: 'Dữ liệu không hợp lệ'
-            });
+            throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_INPUT');
         }
 
         const university = await universityService.toggleUniversityStatus(req.params.id, is_active)
@@ -61,10 +51,8 @@ const toggleUniversityStatus = async (req, res) => {
             message: 'Cập nhật trạng thái trường đại học thành công',
             data: university
         })
-    } catch (err) {
-        return handleError(res, err)
-    }
-}
+
+})
 
 module.exports = {
     getAllUniversities,

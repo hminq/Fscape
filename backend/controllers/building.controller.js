@@ -1,35 +1,24 @@
 const buildingService = require('../services/building.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-const handleError = (res, err) => {
-    console.error('[BuildingController]', err);
-    const status = err.status || 500;
-    const message = err.message || 'Lỗi hệ thống';
-    return res.status(status).json({ message });
-};
 
 // GET /api/buildings
-const getAllBuildings = async (req, res) => {
-    try {
+const getAllBuildings = asyncHandler(async (req, res) => {
         const result = await buildingService.getAllBuildings(req.query, req.user);
         return res.status(200).json({ ...result });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 // GET /api/buildings/:id
-const getBuildingById = async (req, res) => {
-    try {
+const getBuildingById = asyncHandler(async (req, res) => {
         const building = await buildingService.getBuildingById(req.params.id, req.user);
         return res.status(200).json({ data: building });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 // POST /api/buildings
-const createBuilding = async (req, res) => {
-    try {
+const createBuilding = asyncHandler(async (req, res) => {
         const {
             location_id,
             name,
@@ -75,14 +64,11 @@ const createBuilding = async (req, res) => {
             data: building
         });
 
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 // PUT /api/buildings/:id
-const updateBuilding = async (req, res) => {
-    try {
+const updateBuilding = asyncHandler(async (req, res) => {
         const updateData = { ...req.body };
 
         // Normalize facilities to array format.
@@ -99,13 +85,10 @@ const updateBuilding = async (req, res) => {
             data: building
         });
 
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 // DELETE /api/buildings/:id
-const deleteBuilding = async (req, res) => {
-    try {
+const deleteBuilding = asyncHandler(async (req, res) => {
         const result = await buildingService.deleteBuilding(req.params.id);
 
         return res.status(200).json({
@@ -113,19 +96,16 @@ const deleteBuilding = async (req, res) => {
             ...result
         });
 
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 // PATCH /api/buildings/:id/status
-const toggleBuildingStatus = async (req, res) => {
-    try {
+const toggleBuildingStatus = asyncHandler(async (req, res) => {
         const { is_active } = req.body;
 
         if (typeof is_active !== 'boolean') {
             console.warn('[BuildingController] toggleBuildingStatus: is_active is not boolean');
-            return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+            throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_INPUT');
         }
 
         const building = await buildingService.toggleBuildingStatus(req.params.id, is_active, req.user)
@@ -133,33 +113,23 @@ const toggleBuildingStatus = async (req, res) => {
             message: 'Cập nhật trạng thái tòa nhà thành công',
             data: building
         })
-    } catch (err) {
-        return handleError(res, err)
-    }
-}
 
-const getStaffsInBuilding = async (req, res) => {
-  try {
+})
+
+const getStaffsInBuilding = asyncHandler(async (req, res) => {
     const { building_id } = req.params;
 
     const staffs = await buildingService.getStaffsByBuilding(building_id);
 
     return res.json(staffs);
-  } catch (error) {
-    return res.status(500).json({
-      message: error.message
-    });
-  }
-};
+
+});
 // GET /api/buildings/stats
-const getBuildingStats = async (req, res) => {
-    try {
+const getBuildingStats = asyncHandler(async (req, res) => {
         const stats = await buildingService.getBuildingStats();
         return res.status(200).json({ data: stats });
-    } catch (err) {
-        return handleError(res, err);
-    }
-};
+
+});
 
 module.exports = {
     getAllBuildings,

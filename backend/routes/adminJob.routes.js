@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const authJwt = require('../middlewares/authJwt');
 const requireRoles = require('../middlewares/requireRoles');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
 const contractSignatureExpiry = require('../jobs/contractSignatureExpiry.job');
 const bookingExpiry = require('../jobs/bookingExpiry.job');
@@ -39,12 +41,12 @@ router.post(
   '/:jobName/trigger',
   authJwt,
   requireRoles('ADMIN'),
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { jobName } = req.params;
     const job = JOB_MAP[jobName];
 
     if (!job) {
-      return res.status(404).json({ message: `Job "${jobName}" khong ton tai` });
+      throw new AppError('Không tìm thấy tác vụ', 404, 'JOB_NOT_FOUND');
     }
 
     const start = Date.now();
@@ -53,18 +55,19 @@ router.post(
       const duration = Date.now() - start;
       console.log(`[AdminJob] ${jobName} triggered manually by user ${req.user.id} - ${duration}ms`);
       res.json({
-        message: `Job "${jobName}" da chay thanh cong`,
+        message: `Tác vụ "${jobName}" đã chạy thành công`,
         data: { job_name: jobName, duration_ms: duration, status: 'SUCCESS' },
       });
     } catch (err) {
       const duration = Date.now() - start;
       console.error(`[AdminJob] ${jobName} manual trigger failed:`, err.message);
-      res.status(500).json({
-        message: `Job "${jobName}" that bai: ${err.message}`,
-        data: { job_name: jobName, duration_ms: duration, status: 'FAILED' },
+      throw new AppError('Không thể chạy tác vụ', 500, 'JOB_TRIGGER_FAILED', {
+        job_name: jobName,
+        duration_ms: duration,
+        status: 'FAILED',
       });
     }
-  },
+  }),
 );
 
 module.exports = router;

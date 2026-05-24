@@ -1,24 +1,19 @@
 const InternalAuthService = require('../services/internalAuth.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-exports.login = async (req, res) => {
-  try {
+
+exports.login = asyncHandler(async (req, res) => {
     const result = await InternalAuthService.login(req.body);
     res.json(result);
-  } catch (err) {
-    res.status(401).json({
-      message: err.message,
-    });
-  }
-};
 
-exports.changePassword = async (req, res) => {
-  try {
+});
+
+exports.changePassword = asyncHandler(async (req, res) => {
     const { old_password, new_password } = req.body;
 
     if (!old_password || !new_password) {
-      return res.status(400).json({
-        message: 'Vui lòng nhập mật khẩu cũ và mật khẩu mới',
-      });
+      throw new AppError('Vui lòng nhập mật khẩu cũ và mật khẩu mới', 400, 'MISSING_PASSWORD');
     }
 
     await InternalAuthService.changePassword(
@@ -30,9 +25,5 @@ exports.changePassword = async (req, res) => {
     res.json({
       message: 'Đổi mật khẩu thành công',
     });
-  } catch (err) {
-    res.status(400).json({
-      message: err.message,
-    });
-  }
-};
+
+});

@@ -1,7 +1,8 @@
 const bookingService = require('../services/booking.service');
 const paymentService = require('../services/payment.service');
+const asyncHandler = require('../utils/asyncHandler');
 
-const createBooking = async (req, res) => {
+const createBooking = asyncHandler(async (req, res) => {
     let booking = null;
 
     try {
@@ -27,42 +28,28 @@ const createBooking = async (req, res) => {
             }
         }
 
-        console.error('Controller Error (createBooking):', error);
-        return res.status(error.status || 500).json({
-            message: error.message || 'Internal Server Error'
-        });
+        throw error;
     }
-};
+});
 
-const getMyBookings = async (req, res) => {
-    try {
+const getMyBookings = asyncHandler(async (req, res) => {
         const userId = req.user.id;
         const result = await bookingService.getMyBookings(userId, req.query);
 
         return res.status(200).json(result);
-    } catch (error) {
-        return res.status(error.status || 500).json({
-            message: error.message || 'Internal Server Error'
-        });
-    }
-};
 
-const getBookingById = async (req, res) => {
-    try {
+});
+
+const getBookingById = asyncHandler(async (req, res) => {
         const { id } = req.params;
         const booking = await bookingService.getBookingById(id, req.user);
 
         return res.status(200).json({
             data: booking
         });
-    } catch (error) {
-        return res.status(error.status || 500).json({
-            message: error.message || 'Internal Server Error'
-        });
-    }
-};
-const getAllBookings = async (req, res) => {
-    try {
+
+});
+const getAllBookings = asyncHandler(async (req, res) => {
         const filters = {
             page: req.query.page || 1,
             limit: req.query.limit || 10,
@@ -74,19 +61,15 @@ const getAllBookings = async (req, res) => {
             building_id: req.query.building_id,
             search: req.query.search
         };
-        
+
         const result = await bookingService.getAllBookings(filters, req.user);
 
         return res.status(200).json({
             message: 'Danh sách đơn đặt phòng',
             ...result
         });
-    } catch (error) {
-        return res.status(error.status || 500).json({
-            message: error.message || 'Internal Server Error'
-        });
-    }
-};
+
+});
 module.exports = {
     createBooking,
     getMyBookings,

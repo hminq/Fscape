@@ -1,23 +1,19 @@
 const uploadService = require('../services/upload.service');
+const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
 
-const uploadFiles = async (req, res) => {
-  try {
+const uploadFiles = asyncHandler(async (req, res) => {
     const { type } = req.query;
 
     if (!type) {
       console.warn('[UploadController] uploadFiles: missing type query parameter');
-      return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+      throw new AppError('Dữ liệu không hợp lệ', 400, 'INVALID_UPLOAD_TYPE');
     }
 
     const urls = await uploadService.uploadFiles(req, type);
 
     return res.status(200).json({ urls });
-  } catch (err) {
-    console.error('[UploadController]', err);
-    const status = err.status || 500;
-    const message = err.message || 'Tải lên thất bại';
-    return res.status(status).json({ message });
-  }
-};
+
+});
 
 module.exports = { uploadFiles };

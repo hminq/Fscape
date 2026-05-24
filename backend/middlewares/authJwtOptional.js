@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
+const AppError = require('../utils/AppError');
 
 module.exports = async function authJwtOptional(req, res, next) {
     const authHeader = req.headers.authorization;
@@ -23,9 +24,7 @@ module.exports = async function authJwtOptional(req, res, next) {
         }
 
         if (!user.is_active) {
-            return res.status(403).json({
-                message: 'Tài khoản đã bị vô hiệu hóa',
-            });
+            return next(new AppError('Tài khoản đã bị vô hiệu hóa', 403, 'ACCOUNT_DISABLED'));
         }
 
         req.user = {
@@ -35,7 +34,7 @@ module.exports = async function authJwtOptional(req, res, next) {
         };
 
         next();
-    } catch (err) {
+    } catch {
         // Treat invalid tokens as unauthenticatedg 
         req.user = { role: 'PUBLIC' };
         next();
