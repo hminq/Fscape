@@ -9,8 +9,11 @@ const {
 } = require("../config/sqs");
 const { EMAIL_JOB_TYPES } = require("../constants/emailJobs");
 const {
+  sendContractSigningEmail,
+  sendManagerSigningEmail,
   sendOtpMail,
   sendPaymentReceivedEmail,
+  sendRenewalSigningEmail,
   sendWelcomeCheckInEmail,
 } = require("../utils/mail.util");
 
@@ -30,8 +33,17 @@ async function handleEmailJob(job) {
   }
 
   switch (job.type) {
+    case EMAIL_JOB_TYPES.CONTRACT_SIGNING_INVITE:
+      await sendContractSigningEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.MANAGER_SIGNING_INVITE:
+      await sendManagerSigningEmail(job.payload?.email, job.payload);
+      return;
     case EMAIL_JOB_TYPES.PAYMENT_RECEIVED:
       await sendPaymentReceivedEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.RENEWAL_SIGNING_INVITE:
+      await sendRenewalSigningEmail(job.payload?.email, job.payload);
       return;
     case EMAIL_JOB_TYPES.SEND_OTP:
       await sendOtpMail(job.payload?.email, job.payload?.code);

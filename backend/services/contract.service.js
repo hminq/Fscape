@@ -19,7 +19,7 @@ const { SIGNATURE_EXPIRY_MS } = require('../constants/contract');
 const { RENEWAL_MAX_GAP_DAYS } = require('../constants/jobTimeRules');
 const { generateSequentialId, generateNumberedId } = require('../utils/generateId');
 const { INVOICE_TYPE } = require('../constants/invoiceEnums');
-const { sendContractSigningEmail, sendManagerSigningEmail, sendInvoiceCreatedEmail, sendRenewalSigningEmail, sendCheckInReminderEmail, sendManualExpiringReminderEmail, sendContractTerminatedEmail } = require('../utils/mail.util');
+const { sendContractSigningEmail, sendInvoiceCreatedEmail, sendCheckInReminderEmail, sendManualExpiringReminderEmail, sendContractTerminatedEmail } = require('../utils/mail.util');
 const Invoice = require('../models/invoice.model');
 const { generateContractPdf } = require('../utils/pdf.util');
 const auditService = require('./audit.service');
@@ -29,6 +29,8 @@ const RequestStatusHistory = require('../models/requestStatusHistory.model');
 const { createNotification } = require('./notification.service');
 const { generateRequestNumber } = require('./request.service');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
+const { enqueueEmailJob } = require('./emailQueue.service');
+const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
 
 /* Helpers */
 
@@ -43,6 +45,11 @@ const stripTimestamps = (obj) => {
 
 const formatCurrency = (amount) => {
     return Number(amount).toLocaleString('vi-VN');
+};
+
+const enqueueEmailJobSafely = (type, payload, logContext) => {
+    enqueueEmailJob(type, payload)
+        .catch(err => console.error(`[ContractService] Failed to enqueue ${logContext}:`, err));
 };
 
 const formatDate = (date) => {
@@ -436,13 +443,14 @@ const createContractFromBooking = async (bookingId) => {
         const clientUrl = urls.client;
         const signingUrl = `${clientUrl}/sign?contract_id=${contract.id}`;
 
-        await sendContractSigningEmail(customer.email, {
+        enqueueEmailJobSafely(EMAIL_JOB_TYPES.CONTRACT_SIGNING_INVITE, {
+            email: customer.email,
             customerName: dynamicFields.customer_name,
             contractNumber,
             roomNumber: room.room_number,
             buildingName: building.name,
             signingUrl
-        }).catch(err => console.error('[ContractService] Failed to send signing email:', err));
+        }, 'contract signing invitation email');
 
         return contract;
 
@@ -643,7 +651,8 @@ const renewContract = async (contractId, body, user) => {
         const clientUrl = urls.client;
         const signingUrl = `${clientUrl}/sign?contract_id=${newContract.id}`;
 
-        await sendRenewalSigningEmail(customer.email, {
+        enqueueEmailJobSafely(EMAIL_JOB_TYPES.RENEWAL_SIGNING_INVITE, {
+            email: customer.email,
             customerName: dynamicFields.customer_name,
             contractNumber,
             oldContractNumber: oldContract.contract_number,
@@ -652,7 +661,7 @@ const renewContract = async (contractId, body, user) => {
             startDate: formatDate(startDate),
             endDate: formatDate(endDate),
             signingUrl
-        }).catch(err => console.error('[ContractService] Failed to send renewal signing email:', err));
+        }, 'renewal signing invitation email');
 
         return newContract;
 
@@ -732,14 +741,15 @@ const customerSign = async (contractId, signatureUrl, user, req) => {
         const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
         const managerName = `${manager.last_name || ''} ${manager.first_name || ''}`.trim();
 
-        await sendManagerSigningEmail(manager.email, {
+        enqueueEmailJobSafely(EMAIL_JOB_TYPES.MANAGER_SIGNING_INVITE, {
+            email: manager.email,
             managerName,
             customerName,
             contractNumber: contract.contract_number,
             roomNumber: contract.room?.room_number || '',
             buildingName: contract.room?.building?.name || '',
             signingUrl
-        }).catch(err => console.error('[ContractService] Failed to send manager signing email:', err));
+        }, 'manager signing invitation email');
     }
 
     return contract;
