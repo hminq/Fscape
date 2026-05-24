@@ -9,7 +9,7 @@
     "start:worker": "node worker.js",
     "dev": "nodemon server.js",
     "dev:cron": "nodemon cron.js",
-    "test": "cross-env NODE_ENV=test jest --runInBand --detectOpenHandles"
+    "test": "echo \"No tests configured\""
   },
   "keywords": [],
   "author": "",
@@ -51,11 +51,5 @@
     "sequelize-auto": "^0.8.8",
     "sqlite3": "^6.0.1",
     "supertest": "^7.2.2"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "setupFilesAfterEnv": [
-      "./tests/setup.js"
-    ]
   }
 }

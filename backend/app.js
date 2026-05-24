@@ -4,6 +4,8 @@ const cors = require('cors')
 const app = express()
 
 const snakeCaseResponse = require('./middlewares/snakeCaseResponse');
+const AppError = require('./utils/AppError');
+const errorHandler = require('./middlewares/errorHandler');
 
 app.use(cors())
 app.use(express.json())
@@ -41,4 +43,10 @@ app.use('/api/dashboard', require('./routes/dashboard.route'));
 app.use('/api/utils', require('./routes/utils.routes'));
 app.use('/api/chatbot', require('./routes/chatbot.routes'));
 app.use('/api/admin/jobs', require('./routes/adminJob.routes'));
+
+app.use((req, res, next) => {
+  next(new AppError('Không tìm thấy tài nguyên', 404, 'NOT_FOUND'));
+});
+
+app.use(errorHandler);
 module.exports = app
