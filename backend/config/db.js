@@ -17,7 +17,11 @@ const sequelize = database.mode === "url"
       },
     })
   : database.mode === "sqlite"
-    ? new Sequelize(database.url, { logging: false })
+    ? new Sequelize({
+        dialect: "sqlite",
+        storage: ":memory:",
+        logging: false,
+      })
     : new Sequelize(
         database.databaseName,
         database.username,
