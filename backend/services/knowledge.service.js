@@ -1,7 +1,38 @@
 const { embeddingModel } = require('../config/gemini');
-const { getPineconeIndex } = require('../config/pinecone');
+const { getPineconeIndex, getPineconeKnowledgeIndex, KNOWLEDGE_NAMESPACE } = require('../config/pinecone');
 const { sequelize } = require('../config/db');
 const { QueryTypes } = require('sequelize');
+
+const DEFAULT_EMBED_DELAY_MS = 1200;
+const DEFAULT_DB_BATCH_SIZE = 500;
+const MAX_EMBED_RETRIES = 5;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getEmbedDelayMs() {
+  return DEFAULT_EMBED_DELAY_MS;
+}
+
+function getDbBatchSize() {
+  return DEFAULT_DB_BATCH_SIZE;
+}
+
+function getRetryDelayMs(error, attempt) {
+  const retryInfo = error?.errorDetails?.find((detail) => detail.retryDelay);
+  const retryDelaySeconds = retryInfo?.retryDelay?.match(/^(\d+(?:\.\d+)?)s$/)?.[1];
+
+  if (retryDelaySeconds) {
+    return Math.ceil(Number(retryDelaySeconds) * 1000);
+  }
+
+  return Math.min(30000, 1000 * 2 ** attempt);
+}
+
+function isQuotaError(error) {
+  return error?.status === 429 || /quota|too many requests/i.test(error?.message || "");
+}
 
 /**
  * Build a semantic text chunk from a building record.
@@ -30,13 +61,31 @@ function translateRoomStatus(s) {
  * Generate an embedding vector for a text chunk.
  */
 async function embedText(text) {
-  const result = await embeddingModel.embedContent(text);
-  const raw = result.embedding.values;
-  if (!raw || raw.length === 0) {
-    throw new Error(`Empty embedding returned for text: "${text.slice(0, 50)}"`);
+  const embedDelayMs = getEmbedDelayMs();
+
+  for (let attempt = 0; attempt <= MAX_EMBED_RETRIES; attempt += 1) {
+    try {
+      if (embedDelayMs > 0) {
+        await sleep(embedDelayMs);
+      }
+
+      const result = await embeddingModel.embedContent(text);
+      const raw = result.embedding.values;
+      if (!raw || raw.length === 0) {
+        throw new Error(`Empty embedding returned for text: "${text.slice(0, 50)}"`);
+      }
+      // Convert to plain number[] for Pinecone SDK v7.
+      return Array.from(raw);
+    } catch (error) {
+      if (!isQuotaError(error) || attempt === MAX_EMBED_RETRIES) {
+        throw error;
+      }
+
+      const retryDelayMs = getRetryDelayMs(error, attempt);
+      console.warn(`[KnowledgeSync] Embedding quota hit. Retrying in ${retryDelayMs}ms`);
+      await sleep(retryDelayMs);
+    }
   }
-  // Convert to plain number[] for Pinecone SDK v7.
-  return Array.from(raw);
 }
 
 /**
@@ -48,7 +97,7 @@ async function upsertBatch(index, vectors) {
     return;
   }
   const first = vectors[0];
-  console.log(`[upsertBatch] → ${vectors.length} records | id="${first.id}" | values.length=${first.values?.length}`);
+  console.log(`[upsertBatch] ${vectors.length} records | id="${first.id}" | values.length=${first.values?.length}`);
   // Pinecone SDK v7 expects { records: [...] }.
   const batchSize = 100;
   for (let i = 0; i < vectors.length; i += batchSize) {
@@ -57,27 +106,94 @@ async function upsertBatch(index, vectors) {
   }
 }
 
-/**
- * Sync all searchable knowledge from PostgreSQL to Pinecone.
- */
-async function syncKnowledge() {
-  const index = getPineconeIndex();
+async function clearIndexNamespace(index, namespaceName) {
+  console.log(`[KnowledgeSync] Clearing Pinecone namespace: ${namespaceName}`);
+  await index.deleteAll();
+  console.log(`[KnowledgeSync] Pinecone namespace cleared: ${namespaceName}`);
+}
+
+async function clearKnowledgeIndexes(defaultIndex, knowledgeIndex) {
+  await clearIndexNamespace(defaultIndex, "__default__");
+  await clearIndexNamespace(knowledgeIndex, KNOWLEDGE_NAMESPACE);
+}
+
+function getCursorClause(alias, cursor) {
+  if (!cursor) {
+    return "";
+  }
+
+  return `AND (${alias}.updated_at, ${alias}.id) > (:cursorUpdatedAt, :cursorId)`;
+}
+
+function getCursorReplacements(cursor, limit) {
+  const replacements = { limit };
+
+  if (cursor) {
+    replacements.cursorUpdatedAt = cursor.updated_at;
+    replacements.cursorId = cursor.id;
+  }
+
+  return replacements;
+}
+
+async function syncEntityInBatches(index, options) {
+  const {
+    entityName,
+    vectorType,
+    vectorIdPrefix,
+    fetchBatch,
+    buildChunk,
+    logEmbeddingDimension = false,
+  } = options;
+  const batchSize = getDbBatchSize();
+  let cursor = null;
   let totalUpserted = 0;
+  let batchNumber = 0;
+  let embeddingDimensionLogged = !logEmbeddingDimension;
 
-  // Validate Pinecone connectivity with a dummy vector.
-  console.log('[KnowledgeSync] Testing Pinecone connectivity...');
-  const dummyVector = {
-    id: '__connectivity-test__',
-    values: Array(3072).fill(0.001),
-    metadata: { type: 'test', content: 'ping' }
-  };
-  await index.upsert({ records: [dummyVector] });
+  while (true) {
+    batchNumber += 1;
+    const rows = await fetchBatch(cursor, batchSize);
 
-  console.log('[KnowledgeSync] Pinecone connectivity OK');
+    if (rows.length === 0) {
+      console.log(`[KnowledgeSync] ${entityName} completed. Total upserted: ${totalUpserted}`);
+      return totalUpserted;
+    }
 
-  // 1) Buildings
-  const buildings = await sequelize.query(
-    `SELECT b.id, b.name, b.address, b.description, b.total_floors, b.is_active, l.name as location_name,
+    console.log(`[KnowledgeSync] ${entityName} batch ${batchNumber} fetched: ${rows.length}`);
+
+    const vectors = [];
+    for (const row of rows) {
+      const text = buildChunk(row);
+      const embedding = await embedText(text);
+
+      if (!embeddingDimensionLogged) {
+        console.log(`[KnowledgeSync] Embedding dimension: ${embedding.length}`);
+        embeddingDimensionLogged = true;
+      }
+
+      vectors.push({
+        id: `${vectorIdPrefix}-${row.id}`,
+        values: embedding,
+        metadata: { type: vectorType, id: row.id, content: text }
+      });
+    }
+
+    await upsertBatch(index, vectors);
+    totalUpserted += vectors.length;
+
+    const lastRow = rows[rows.length - 1];
+    cursor = {
+      updated_at: lastRow.updated_at,
+      id: lastRow.id,
+    };
+  }
+}
+
+async function fetchBuildingBatch(cursor, limit) {
+  const cursorClause = getCursorClause("b", cursor);
+  return sequelize.query(
+    `SELECT b.id, b.name, b.address, b.description, b.total_floors, b.is_active, b.updated_at, l.name as location_name,
             (SELECT COUNT(*) FROM rooms r WHERE r.building_id = b.id AND r.deleted_at IS NULL) as total_rooms,
             (SELECT COUNT(*) FROM rooms r WHERE r.building_id = b.id AND r.deleted_at IS NULL AND r.status = 'AVAILABLE') as available_rooms,
             (SELECT STRING_AGG(DISTINCT f.name, ', ') 
@@ -89,58 +205,41 @@ async function syncKnowledge() {
              WHERE u.location_id = b.location_id AND u.is_active = true) as nearby_universities
      FROM buildings b
      LEFT JOIN locations l ON b.location_id = l.id
-     WHERE b.is_active = true`,
-    { type: QueryTypes.SELECT }
-  );
-  console.log(`[KnowledgeSync] DB buildings fetched: ${buildings.length}`);
-
-  const buildingVectors = [];
-  for (const b of buildings) {
-    const text = buildBuildingChunk(b);
-    const embedding = await embedText(text);
-    if (buildingVectors.length === 0) {
-      console.log(`[KnowledgeSync] Embedding dimension: ${embedding.length}`);
+     WHERE b.is_active = true
+       ${cursorClause}
+     ORDER BY b.updated_at ASC, b.id ASC
+     LIMIT :limit`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: getCursorReplacements(cursor, limit),
     }
-    buildingVectors.push({
-      id: `building-${b.id}`,
-      values: embedding,
-      metadata: { type: 'building', id: b.id, content: text }
-    });
-  }
-  await upsertBatch(index, buildingVectors);
-  totalUpserted += buildingVectors.length;
-  console.log(`[KnowledgeSync] Buildings upserted: ${buildingVectors.length}`);
+  );
+}
 
-  // 2) Room types
-  const roomTypes = await sequelize.query(
-    `SELECT rt.id, rt.name, rt.description, rt.base_price, rt.deposit_months, rt.capacity_min, rt.capacity_max, rt.bedrooms, rt.bathrooms, rt.area_sqm,
+async function fetchRoomTypeBatch(cursor, limit) {
+  const cursorClause = getCursorClause("rt", cursor);
+  return sequelize.query(
+    `SELECT rt.id, rt.name, rt.description, rt.base_price, rt.deposit_months, rt.capacity_min, rt.capacity_max, rt.bedrooms, rt.bathrooms, rt.area_sqm, rt.updated_at,
             (SELECT STRING_AGG(CONCAT(at.name, ' (x', rta.quantity, ')'), ', ')
              FROM room_type_assets rta
              JOIN asset_types at ON rta.asset_type_id = at.id
              WHERE rta.room_type_id = rt.id) as assets
      FROM room_types rt 
-     WHERE rt.deleted_at IS NULL AND rt.is_active = true`,
-    { type: QueryTypes.SELECT }
+     WHERE rt.deleted_at IS NULL AND rt.is_active = true
+       ${cursorClause}
+     ORDER BY rt.updated_at ASC, rt.id ASC
+     LIMIT :limit`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: getCursorReplacements(cursor, limit),
+    }
   );
-  console.log(`[KnowledgeSync] DB room_types fetched: ${roomTypes.length}`);
+}
 
-  const rtVectors = [];
-  for (const rt of roomTypes) {
-    const text = buildRoomTypeChunk(rt);
-    const embedding = await embedText(text);
-    rtVectors.push({
-      id: `roomtype-${rt.id}`,
-      values: embedding,
-      metadata: { type: 'room_type', id: rt.id, content: text }
-    });
-  }
-  await upsertBatch(index, rtVectors);
-  totalUpserted += rtVectors.length;
-  console.log(`[KnowledgeSync] ✅ RoomTypes upserted: ${rtVectors.length}`);
-
-  // 3) Rooms (joined with building and room type)
-  const rooms = await sequelize.query(
-    `SELECT r.id, r.room_number, r.floor, r.status,
+async function fetchRoomBatch(cursor, limit) {
+  const cursorClause = getCursorClause("r", cursor);
+  return sequelize.query(
+    `SELECT r.id, r.room_number, r.floor, r.status, r.updated_at,
             b.name AS building_name,
             rt.name AS room_type_name, rt.base_price, rt.area_sqm,
             rt.capacity_min, rt.capacity_max, rt.bedrooms, rt.bathrooms,
@@ -150,75 +249,107 @@ async function syncKnowledge() {
      FROM rooms r
      JOIN buildings b ON r.building_id = b.id
      JOIN room_types rt ON r.room_type_id = rt.id
-     WHERE r.deleted_at IS NULL AND b.is_active = true`,
-    { type: QueryTypes.SELECT }
+     WHERE r.deleted_at IS NULL AND b.is_active = true
+       ${cursorClause}
+     ORDER BY r.updated_at ASC, r.id ASC
+     LIMIT :limit`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: getCursorReplacements(cursor, limit),
+    }
   );
+}
 
-  const roomVectors = [];
-  for (const r of rooms) {
-    const text = buildRoomChunk(r);
-    const embedding = await embedText(text);
-    roomVectors.push({
-      id: `room-${r.id}`,
-      values: embedding,
-      metadata: { type: 'room', id: r.id, content: text }
-    });
-  }
-  await upsertBatch(index, roomVectors);
-  totalUpserted += roomVectors.length;
-  console.log(`[KnowledgeSync] Rooms: ${roomVectors.length}`);
-
-  // 4) Facilities
-  const facilities = await sequelize.query(
-    `SELECT f.id, f.name,
+async function fetchFacilityBatch(cursor, limit) {
+  const cursorClause = getCursorClause("f", cursor);
+  return sequelize.query(
+    `SELECT f.id, f.name, f.updated_at,
             STRING_AGG(DISTINCT b.name, ', ') AS building_names
      FROM facilities f
      LEFT JOIN building_facilities bf ON bf.facility_id = f.id
      LEFT JOIN buildings b ON b.id = bf.building_id
-     GROUP BY f.id, f.name`,
-    { type: QueryTypes.SELECT }
+     WHERE 1 = 1
+       ${cursorClause}
+     GROUP BY f.id, f.name, f.updated_at
+     ORDER BY f.updated_at ASC, f.id ASC
+     LIMIT :limit`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: getCursorReplacements(cursor, limit),
+    }
   );
+}
 
-  const facVectors = [];
-  for (const f of facilities) {
-    const text = buildFacilityChunk(f);
-    const embedding = await embedText(text);
-    facVectors.push({
-      id: `facility-${f.id}`,
-      values: embedding,
-      metadata: { type: 'facility', id: f.id, content: text }
-    });
-  }
-  await upsertBatch(index, facVectors);
-  totalUpserted += facVectors.length;
-  console.log(`[KnowledgeSync] Facilities: ${facVectors.length}`);
-
-  // 5) Universities
-  const universities = await sequelize.query(
-    `SELECT u.id, u.name, u.address, u.is_active, l.name as location_name,
+async function fetchUniversityBatch(cursor, limit) {
+  const cursorClause = getCursorClause("u", cursor);
+  return sequelize.query(
+    `SELECT u.id, u.name, u.address, u.is_active, u.updated_at, l.name as location_name,
             (SELECT STRING_AGG(DISTINCT b.name, ', ')
              FROM buildings b
              WHERE b.location_id = u.location_id AND b.is_active = true) as nearby_buildings
      FROM universities u
      LEFT JOIN locations l ON u.location_id = l.id
-     WHERE u.is_active = true`,
-    { type: QueryTypes.SELECT }
+     WHERE u.is_active = true
+       ${cursorClause}
+     ORDER BY u.updated_at ASC, u.id ASC
+     LIMIT :limit`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: getCursorReplacements(cursor, limit),
+    }
   );
-  console.log(`[KnowledgeSync] DB universities fetched: ${universities.length}`);
+}
 
-  const universityVectors = [];
-  for (const u of universities) {
-    const text = buildUniversityChunk(u);
-    const embedding = await embedText(text);
-    universityVectors.push({
-      id: `university-${u.id}`,
-      values: embedding,
-      metadata: { type: 'university', id: u.id, content: text }
-    });
-  }
-  await upsertBatch(index, universityVectors);
-  totalUpserted += universityVectors.length;
-  console.log(`[KnowledgeSync] Universities upserted: ${universityVectors.length}`);
+/**
+ * Sync all searchable knowledge from PostgreSQL to Pinecone.
+ */
+async function syncKnowledge() {
+  const defaultIndex = getPineconeIndex();
+  const index = getPineconeKnowledgeIndex();
+  let totalUpserted = 0;
+
+  await clearKnowledgeIndexes(defaultIndex, index);
+
+  totalUpserted += await syncEntityInBatches(index, {
+    entityName: "Buildings",
+    vectorType: "building",
+    vectorIdPrefix: "building",
+    fetchBatch: fetchBuildingBatch,
+    buildChunk: buildBuildingChunk,
+    logEmbeddingDimension: true,
+  });
+
+  totalUpserted += await syncEntityInBatches(index, {
+    entityName: "RoomTypes",
+    vectorType: "room_type",
+    vectorIdPrefix: "roomtype",
+    fetchBatch: fetchRoomTypeBatch,
+    buildChunk: buildRoomTypeChunk,
+  });
+
+  totalUpserted += await syncEntityInBatches(index, {
+    entityName: "Rooms",
+    vectorType: "room",
+    vectorIdPrefix: "room",
+    fetchBatch: fetchRoomBatch,
+    buildChunk: buildRoomChunk,
+  });
+
+  totalUpserted += await syncEntityInBatches(index, {
+    entityName: "Facilities",
+    vectorType: "facility",
+    vectorIdPrefix: "facility",
+    fetchBatch: fetchFacilityBatch,
+    buildChunk: buildFacilityChunk,
+  });
+
+  totalUpserted += await syncEntityInBatches(index, {
+    entityName: "Universities",
+    vectorType: "university",
+    vectorIdPrefix: "university",
+    fetchBatch: fetchUniversityBatch,
+    buildChunk: buildUniversityChunk,
+  });
 
   console.log(`[KnowledgeSync] Sync complete. Total vectors upserted: ${totalUpserted}`);
   return totalUpserted;

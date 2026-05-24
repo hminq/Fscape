@@ -10,6 +10,7 @@ const {
     SIGNING_REMINDER_AFTER_HOURS,
     SIGNING_URGENT_BEFORE_HOURS
 } = require('../constants/jobTimeRules');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
 const SIGNING_REMINDER_AFTER_MS = SIGNING_REMINDER_AFTER_HOURS * MS_PER_HOUR;
 const SIGNING_URGENT_BEFORE_MS = SIGNING_URGENT_BEFORE_HOURS * MS_PER_HOUR;
@@ -41,15 +42,16 @@ const run = async () => {
             const remaining = expiresAt - now;
 
             // Determine recipient based on current signing stage
+            const { urls } = getRuntimeConfig();
             let recipientEmail, recipientName, signingUrl;
             if (contract.status === 'PENDING_CUSTOMER_SIGNATURE' && contract.customer) {
                 recipientEmail = contract.customer.email;
                 recipientName = `${contract.customer.last_name} ${contract.customer.first_name}`.trim();
-                signingUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/sign?contractId=${contract.id}`;
+                signingUrl = `${urls.client}/sign?contractId=${contract.id}`;
             } else if (contract.status === 'PENDING_MANAGER_SIGNATURE' && contract.manager) {
                 recipientEmail = contract.manager.email;
                 recipientName = `${contract.manager.last_name} ${contract.manager.first_name}`.trim();
-                signingUrl = `${process.env.ADMIN_URL || 'http://localhost:5174'}/building-manager/contracts?sign=${contract.id}`;
+                signingUrl = `${urls.admin}/building-manager/contracts?sign=${contract.id}`;
             }
 
             if (!recipientEmail) continue;

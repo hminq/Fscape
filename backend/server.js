@@ -3,17 +3,19 @@ const { loadRuntimeEnv } = require("./config/env");
 async function startServer() {
   try {
     await loadRuntimeEnv();
+    const { getRuntimeConfig, validateRuntimeConfig } = require("./config/runtimeConfig");
+    validateRuntimeConfig();
 
     const app = require("./app");
     const { connectDB } = require("./config/db");
     const { initModels } = require("./models/initModels");
-    const PORT = process.env.PORT || 3000;
+    const { port } = getRuntimeConfig();
 
     await connectDB();
     initModels();
 
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running at Port:${PORT}`);
+    app.listen(port, "0.0.0.0", () => {
+      console.log(`Server running at Port:${port}`);
     });
   } catch (error) {
     console.error("Server startup error:", error);

@@ -8,6 +8,7 @@ const signingReminder = require('./signingReminder.job');
 const firstRentReminder = require('./firstRentReminder.job');
 const checkInExpiry = require('./checkInExpiry.job');
 const invoiceOverdue = require('./invoiceOverdue.job');
+const knowledgeSync = require('./knowledgeSync.job');
 
 function initCronJobs() {
     // Contract signature expiry - every 15 minutes
@@ -89,6 +90,17 @@ function initCronJobs() {
         } catch (err) {
             console.error('[CronScheduler] invoiceOverdue error:', err.message);
         }
+    });
+
+    // Knowledge sync - daily at 4:00 AM
+    cron.schedule('0 4 * * *', async () => {
+        try {
+            await knowledgeSync.run();
+        } catch (err) {
+            console.error('[CronScheduler] knowledgeSync error:', err.message);
+        }
+    }, {
+        timezone: 'Asia/Ho_Chi_Minh'
     });
 
     console.log('[CronScheduler] Cron jobs initialized');

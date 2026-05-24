@@ -3,6 +3,8 @@ const { loadRuntimeEnv } = require("./config/env");
 async function startWorker() {
   try {
     await loadRuntimeEnv();
+    const { validateRuntimeConfig } = require("./config/runtimeConfig");
+    validateRuntimeConfig();
 
     const { connectDB } = require("./config/db");
     const { initModels } = require("./models/initModels");
