@@ -1,19 +1,25 @@
 const { Pinecone } = require('@pinecone-database/pinecone');
+const { getRuntimeConfig } = require('./runtimeConfig');
 
 let pineconeClient = null;
+const KNOWLEDGE_NAMESPACE = "public";
 
 const getPineconeClient = () => {
   if (!pineconeClient) {
+    const { pinecone } = getRuntimeConfig();
     pineconeClient = new Pinecone({
-      apiKey: process.env.PINECONE_API_KEY,
+      apiKey: pinecone.apiKey,
     });
   }
   return pineconeClient;
 };
 
 const getPineconeIndex = () => {
+  const { pinecone } = getRuntimeConfig();
   const client = getPineconeClient();
-  return client.index(process.env.PINECONE_INDEX || 'fscape');
+  return client.index(pinecone.index);
 };
 
-module.exports = { getPineconeClient, getPineconeIndex };
+const getPineconeKnowledgeIndex = () => getPineconeIndex().namespace(KNOWLEDGE_NAMESPACE);
+
+module.exports = { getPineconeClient, getPineconeIndex, getPineconeKnowledgeIndex, KNOWLEDGE_NAMESPACE };

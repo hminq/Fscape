@@ -1,19 +1,17 @@
 const { S3Client } = require('@aws-sdk/client-s3');
+const { getRuntimeConfig } = require('./runtimeConfig');
 
+const { aws } = getRuntimeConfig();
 const s3Config = {
-  region: process.env.AWS_REGION,
+  region: aws.region,
 };
 
-// Configure credentials only if AWS access key and secret are provided (local development)
-if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
-  s3Config.credentials = {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  };
+if (aws.credentials) {
+  s3Config.credentials = aws.credentials;
 }
 
 const s3Client = new S3Client(s3Config);
 
-const bucketName = process.env.AWS_S3_BUCKET_NAME;
+const bucketName = aws.s3BucketName;
 
 module.exports = { s3Client, bucketName };

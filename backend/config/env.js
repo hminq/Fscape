@@ -45,6 +45,10 @@ async function loadRuntimeEnv() {
     throw new Error("AWS_SECRET_MANAGER_SECRET_NAME is required in production");
   }
 
+  if (!process.env.AWS_REGION) {
+    throw new Error("AWS_REGION is required in production");
+  }
+
   const client = new SecretsManagerClient({
     region: process.env.AWS_REGION,
   });

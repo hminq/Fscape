@@ -1,8 +1,9 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { getRuntimeConfig } = require('./runtimeConfig');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const { gemini } = getRuntimeConfig();
+const genAI = new GoogleGenerativeAI(gemini.apiKey);
 
-// gemini-embedding-001 supports embedContent on v1beta.
 const embeddingModel = genAI.getGenerativeModel({ model: 'gemini-embedding-001' });
 const chatModel = genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
 
