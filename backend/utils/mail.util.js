@@ -1,24 +1,20 @@
 const nodemailer = require("nodemailer");
 const emailAuditService = require("../services/emailAudit.service");
 const { sequelize } = require("../config/db");
+const { getRuntimeConfig } = require("../config/runtimeConfig");
 
-if (
-  process.env.NODE_ENV !== "test" &&
-  (!process.env.MAIL_USER || !process.env.MAIL_PASS)
-) {
-  throw new Error("MAIL credentials missing");
-}
+const { isTest, mail, urls } = getRuntimeConfig();
 
 const transporter =
-  process.env.NODE_ENV === "test"
+  isTest
     ? null
     : nodemailer.createTransport({
-        host: process.env.MAIL_HOST,
-        port: Number(process.env.MAIL_PORT),
+        host: mail.host,
+        port: mail.port,
         secure: false,
         auth: {
-          user: process.env.MAIL_USER,
-          pass: process.env.MAIL_PASS,
+          user: mail.user,
+          pass: mail.pass,
         },
       });
 
@@ -76,7 +72,7 @@ const sendMailWithAudit = async ({
 }) => {
   try {
     await transporter.sendMail({
-      from: `"FScape" <${process.env.MAIL_USER}>`,
+      from: `"FScape" <${mail.user}>`,
       to,
       subject,
       html,
@@ -376,7 +372,7 @@ exports.sendInvoiceCreatedEmail = async (
     dueDate,
   },
 ) => {
-  const invoiceUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/my-invoices?invoiceId=${invoiceId}`;
+  const invoiceUrl = `${urls.client}/my-invoices?invoiceId=${invoiceId}`;
   await sendMailWithAudit({
     to: email,
     subject: `Hóa đơn ${invoiceNumber} - Vui lòng thanh toán trước ${dueDate}`,
@@ -1098,7 +1094,7 @@ exports.sendPaymentReminderEmail = async (
   },
 ) => {
   if (await wasEmailSent("FIRST_RENT_PAYMENT_REMINDER", invoiceId)) return;
-  const invoiceUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/my-invoices?invoiceId=${invoiceId}`;
+  const invoiceUrl = `${urls.client}/my-invoices?invoiceId=${invoiceId}`;
   const subject = `Nhắc nhở: Hóa đơn ${invoiceNumber} - Thanh toán trước ${dueDate}`;
   await sendMailWithAudit({
     to: email,
@@ -1175,7 +1171,7 @@ exports.sendPaymentUrgentReminderEmail = async (
   },
 ) => {
   if (await wasEmailSent("FIRST_RENT_PAYMENT_URGENT", invoiceId)) return;
-  const invoiceUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/my-invoices?invoiceId=${invoiceId}`;
+  const invoiceUrl = `${urls.client}/my-invoices?invoiceId=${invoiceId}`;
   const subject = `KHẨN: Hóa đơn ${invoiceNumber} - Hôm nay là hạn cuối`;
   await sendMailWithAudit({
     to: email,
@@ -1439,7 +1435,7 @@ exports.sendInvoiceOverdueResidentEmail = async (
   },
 ) => {
   if (await wasEmailSent("INVOICE_OVERDUE_RESIDENT", invoiceId)) return;
-  const invoiceUrl = `${process.env.CLIENT_URL || "http://localhost:5173"}/my-invoices?invoiceId=${invoiceId}`;
+  const invoiceUrl = `${urls.client}/my-invoices?invoiceId=${invoiceId}`;
   const subject = `Hóa đơn ${invoiceNumber} đã quá hạn thanh toán`;
   await sendMailWithAudit({
     to: email,

@@ -1,12 +1,14 @@
 const jwt = require('jsonwebtoken');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
 const generateAccessToken = (user) => {
+  const { jwtSecret } = getRuntimeConfig();
   return jwt.sign(
     {
       sub: user.id,
       role: user.role
     },
-    process.env.JWT_SECRET,
+    jwtSecret,
     {
       expiresIn: '1h'
     }

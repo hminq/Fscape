@@ -1,5 +1,5 @@
 const { chatModel, embeddingModel } = require('../config/gemini');
-const { getPineconeIndex } = require('../config/pinecone');
+const { getPineconeKnowledgeIndex } = require('../config/pinecone');
 
 const SYSTEM_INSTRUCTION = `Bạn là trợ lý AI của hệ thống quản lý nhà trọ Fscape. 
 Nhiệm vụ của bạn là trả lời các câu hỏi liên quan đến tòa nhà, phòng trống, hợp đồng, đặt phòng, hóa đơn và các thông tin về hệ thống.
@@ -23,7 +23,7 @@ async function embedQuery(text) {
  * Perform semantic retrieval in Pinecone and return context chunks.
  */
 async function retrieveContext(query, topK = 6) {
-  const index = getPineconeIndex();
+  const index = getPineconeKnowledgeIndex();
   const queryVector = await embedQuery(query);
 
   const searchResult = await index.query({

@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
 module.exports = async function authJwt(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -13,7 +14,8 @@ module.exports = async function authJwt(req, res, next) {
   const token = authHeader.split(' ')[1];
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const { jwtSecret } = getRuntimeConfig();
+    const payload = jwt.verify(token, jwtSecret);
 
     const user = await User.findByPk(payload.sub);
     if (!user) {

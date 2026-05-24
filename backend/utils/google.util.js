@@ -1,12 +1,14 @@
 // utils/google.util.js
 const { OAuth2Client } = require('google-auth-library');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const { google } = getRuntimeConfig();
+const client = new OAuth2Client(google.clientId);
 
 exports.verifyGoogleIdToken = async (idToken) => {
   const ticket = await client.verifyIdToken({
     idToken,
-    audience: process.env.GOOGLE_CLIENT_ID,
+    audience: google.clientId,
   });
 
   return ticket.getPayload();

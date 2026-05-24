@@ -5,6 +5,7 @@ const contractService = require('./contract.service');
 const { parseUTCDate } = require('../utils/date.util');
 const { enqueueEmailJob } = require('./emailQueue.service');
 const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
 const PAYOS_GATEWAY_ERROR = {
     status: 502,
@@ -16,7 +17,8 @@ const PAYOS_GATEWAY_ERROR = {
  * Uses PAYOS_TEST_AMOUNT when provided.
  */
 const getPayosAmount = (realAmount) => {
-    const testAmount = process.env.PAYOS_TEST_AMOUNT;
+    const { payos } = getRuntimeConfig();
+    const testAmount = payos.testAmount;
     if (testAmount) return Number(testAmount);
     return Math.round(Number(realAmount));
 };
@@ -368,7 +370,8 @@ const payosWebhook = async (body) => {
     }
 
     // Validate paid amount (skipped in test mode).
-    if (!process.env.PAYOS_TEST_AMOUNT && Number(payment.amount) !== amount) {
+    const { payos } = getRuntimeConfig();
+    if (!payos.testAmount && Number(payment.amount) !== amount) {
         console.error(`[PayOS Webhook] Amount mismatch: expected ${payment.amount}, got ${amount}`);
         return { success: true };
     }

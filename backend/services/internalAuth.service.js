@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/user.model");
 const { AuthProvider } = require("../models/authProvider.model");
 const { INTERNAL_LOGIN_ROLES } = require("../constants/auth");
+const { getRuntimeConfig } = require("../config/runtimeConfig");
 
 class InternalAuthService {
   // ========= LOGIN =========
@@ -40,12 +41,13 @@ class InternalAuthService {
       throw new Error("Mật khẩu không chính xác");
     }
 
+    const { jwtSecret } = getRuntimeConfig();
     const token = jwt.sign(
       {
         sub: user.id,
         role: user.role,
       },
-      process.env.JWT_SECRET,
+      jwtSecret,
       { expiresIn: "1d" },
     );
 

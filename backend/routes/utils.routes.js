@@ -1,8 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const { getDistanceKm } = require('../utils/geo.util');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
-const ORS_API_KEY = process.env.ORS_API_KEY;
+const { openRouteService } = getRuntimeConfig();
+const ORS_API_KEY = openRouteService.apiKey;
 const ORS_BASE_URL = 'https://api.openrouteservice.org/v2/directions/driving-car';
 
 /**

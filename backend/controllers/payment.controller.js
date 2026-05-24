@@ -1,5 +1,6 @@
 const { sequelize } = require("../config/db");
 const paymentService = require("../services/payment.service");
+const { getRuntimeConfig } = require("../config/runtimeConfig");
 
 const getMyPayments = async (req, res) => {
     const { Payment, Booking, Room, Building } = sequelize.models;
@@ -69,7 +70,8 @@ const payosWebhook = async (req, res) => {
 };
 
 const payosReturn = async (req, res) => {
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+    const { urls } = getRuntimeConfig();
+    const clientUrl = urls.client;
     const { code, id, cancel, status, orderCode } = req.query;
     return res.redirect(
         `${clientUrl}/payment/result?code=${code}&id=${id || ''}&cancel=${cancel || 'false'}&status=${status || ''}&orderCode=${orderCode || ''}`

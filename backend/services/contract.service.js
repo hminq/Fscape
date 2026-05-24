@@ -28,6 +28,7 @@ const Request = require('../models/request.model');
 const RequestStatusHistory = require('../models/requestStatusHistory.model');
 const { createNotification } = require('./notification.service');
 const { generateRequestNumber } = require('./request.service');
+const { getRuntimeConfig } = require('../config/runtimeConfig');
 
 /* Helpers */
 
@@ -75,12 +76,11 @@ const addMonths = (dateStr, months) => {
     return `${yyyy}-${mm}-${dd}`;
 };
 
-const HARD_CODED_CDN_BASE = 'https://d1b3vbhmpnv3fk.cloudfront.net';
-
 const toPublicAssetUrl = (value) => {
     if (!value) return value;
     if (value.startsWith('http://') || value.startsWith('https://')) return value;
-    const base = (process.env.CLOUD_FRONT_URL || process.env.CDN_BASE_URL || HARD_CODED_CDN_BASE).replace(/\/$/, '');
+    const { urls } = getRuntimeConfig();
+    const base = urls.cloudFront.replace(/\/$/, '');
     const path = value.replace(/^\//, '');
     return base ? `${base}/${path}` : value;
 };
@@ -432,7 +432,8 @@ const createContractFromBooking = async (bookingId) => {
         await transaction.commit();
 
         // Send signing email with direct link
-        const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+        const { urls } = getRuntimeConfig();
+        const clientUrl = urls.client;
         const signingUrl = `${clientUrl}/sign?contract_id=${contract.id}`;
 
         await sendContractSigningEmail(customer.email, {
@@ -638,7 +639,8 @@ const renewContract = async (contractId, body, user) => {
         await transaction.commit();
 
         // 16. Send renewal signing email
-        const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+        const { urls } = getRuntimeConfig();
+        const clientUrl = urls.client;
         const signingUrl = `${clientUrl}/sign?contract_id=${newContract.id}`;
 
         await sendRenewalSigningEmail(customer.email, {
@@ -724,7 +726,8 @@ const customerSign = async (contractId, signatureUrl, user, req) => {
     const manager = await User.findByPk(contract.manager_id);
     const customer = await User.findByPk(contract.customer_id);
     if (manager && customer) {
-        const adminUrl = process.env.ADMIN_URL || 'http://localhost:5174';
+        const { urls } = getRuntimeConfig();
+        const adminUrl = urls.admin;
         const signingUrl = `${adminUrl}/building-manager/contracts?sign=${contract.id}`;
         const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
         const managerName = `${manager.last_name || ''} ${manager.first_name || ''}`.trim();
@@ -1037,7 +1040,8 @@ const sendManualReminder = async (contractId, reminderType, user) => {
     const roomNumber = contract.room?.room_number || '';
     const buildingName = contract.room?.building?.name || '';
     const contractNumber = contract.contract_number;
-    const signingUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/sign?contract_id=${contractId}`;
+    const { urls } = getRuntimeConfig();
+    const signingUrl = `${urls.client}/sign?contract_id=${contractId}`;
 
     switch (reminderType) {
         case 'SIGN': {

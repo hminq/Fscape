@@ -1,5 +1,4 @@
 const chatbotService = require('../services/chatbot.service');
-const knowledgeService = require('../services/knowledge.service');
 
 /**
  * POST /api/chatbot/chat
@@ -29,26 +28,4 @@ const chat = async (req, res) => {
   }
 };
 
-/**
- * POST /api/chatbot/sync
- * Sync knowledge base từ DB vào Pinecone - admin only
- */
-const syncKnowledge = async (req, res) => {
-  try {
-    console.log('[ChatbotController] Starting knowledge sync...');
-    const totalCount = await knowledgeService.syncKnowledge();
-    return res.json({
-      message: 'Knowledge base synced successfully.',
-      total_vectors: totalCount,
-    });
-  } catch (error) {
-    console.error('[ChatbotController] syncKnowledge error:', error.message);
-    console.error('[ChatbotController] syncKnowledge stack:', error.stack);
-    return res.status(500).json({
-      error: 'Không thể sync knowledge base.',
-      detail: error.message,
-    });
-  }
-};
-
-module.exports = { chat, syncKnowledge };
+module.exports = { chat };
