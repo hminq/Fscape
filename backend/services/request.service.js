@@ -11,6 +11,7 @@ const Building = require('../models/building.model');
 const { ROLES } = require('../constants/roles');
 const { createNotification } = require('./notification.service');
 
+const AppError = require('../utils/AppError');
 const REQUEST_STATUS_LABELS = {
     PENDING: 'Đang chờ xử lý',
     ASSIGNED: 'Đã phân công',
@@ -88,18 +89,18 @@ const TRANSITION_MAP = {
 const validateTransition = (fromStatus, toStatus, callerRole, body) => {
     const fromMap = TRANSITION_MAP[fromStatus];
     if (!fromMap || !fromMap[toStatus]) {
-        throw { status: 400, message: `Chuyển trạng thái không hợp lệ: ${fromStatus} → ${toStatus}` };
+        throw new AppError('Không thể chuyển yêu cầu sang trạng thái này', 400);
     }
 
     const rule = fromMap[toStatus];
 
     if (!rule.roles.includes(callerRole)) {
-        throw { status: 403, message: `Vai trò ${callerRole} không được phép chuyển trạng thái từ ${fromStatus} sang ${toStatus}` };
+        throw new AppError('Bạn không có quyền chuyển yêu cầu sang trạng thái này', 403);
     }
 
     for (const field of rule.required) {
         if (body[field] === undefined || body[field] === null || body[field] === '') {
-            throw { status: 400, message: `Thiếu trường bắt buộc: ${field} (cho chuyển trạng thái ${fromStatus} → ${toStatus})` };
+            throw new AppError('Thiếu dữ liệu bắt buộc để cập nhật trạng thái yêu cầu', 400);
         }
     }
 };
@@ -118,7 +119,7 @@ const getRequestAccessPayload = async (id) => {
 
 const assertRequestAccess = (request, actor) => {
     if (!request) {
-        throw { status: 404, message: 'Không tìm thấy yêu cầu' };
+        throw new AppError('Không tìm thấy yêu cầu', 404);
     }
 
     if (actor.role === ROLES.ADMIN) {
@@ -127,21 +128,21 @@ const assertRequestAccess = (request, actor) => {
 
     if (actor.role === ROLES.BUILDING_MANAGER) {
         if (!actor.building_id || request.room?.building_id !== actor.building_id) {
-            throw { status: 403, message: ACCESS_DENIED_MESSAGE };
+            throw new AppError(ACCESS_DENIED_MESSAGE, 403);
         }
         return;
     }
 
     if (actor.role === ROLES.STAFF) {
         if (request.assigned_staff_id !== actor.id) {
-            throw { status: 403, message: ACCESS_DENIED_MESSAGE };
+            throw new AppError(ACCESS_DENIED_MESSAGE, 403);
         }
         return;
     }
 
     if (actor.role === ROLES.RESIDENT) {
         if (request.resident_id !== actor.id) {
-            throw { status: 403, message: ACCESS_DENIED_MESSAGE };
+            throw new AppError(ACCESS_DENIED_MESSAGE, 403);
         }
     }
 };
@@ -198,7 +199,7 @@ const getAllRequests = async (caller, { page = 1, limit = 10, status, request_ty
     }
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
-        if (!caller.building_id) throw { status: 403, message: 'Quản lý tòa nhà chưa được phân công tòa nhà nào' };
+        if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         roomInclude.where = { building_id: caller.building_id };
         roomInclude.required = true;
     } else if (caller.role === ROLES.STAFF) {
@@ -284,20 +285,20 @@ const getRequestById = async (caller, id) => {
         order: [[{ model: RequestStatusHistory, as: 'status_history' }, 'created_at', 'DESC']]
     });
 
-    if (!request) throw { status: 404, message: 'Không tìm thấy yêu cầu' };
+    if (!request) throw new AppError('Không tìm thấy yêu cầu', 404);
 
     // Access check
     if (caller.role === ROLES.BUILDING_MANAGER) {
         if (request.room?.building_id !== caller.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền thực hiện hành động này' };
+            throw new AppError('Bạn không có quyền thực hiện hành động này', 403);
         }
     } else if (caller.role === ROLES.STAFF) {
         if (request.assigned_staff_id !== caller.id) {
-            throw { status: 403, message: 'Bạn không có quyền thực hiện hành động này' };
+            throw new AppError('Bạn không có quyền thực hiện hành động này', 403);
         }
     } else if (caller.role === ROLES.RESIDENT) {
         if (request.resident_id !== caller.id) {
-            throw { status: 403, message: 'Bạn không có quyền thực hiện hành động này' };
+            throw new AppError('Bạn không có quyền thực hiện hành động này', 403);
         }
     }
 
@@ -310,7 +311,7 @@ const createRequest = async (data) => {
 
     try {
         const room = await Room.findByPk(requestData.room_id, { transaction });
-        if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+        if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
         requestData.request_number = await generateRequestNumber();
         requestData.status = 'PENDING';
@@ -379,7 +380,7 @@ const assignRequest = async (id, staff_id, actor) => {
     assertRequestAccess(request, actor);
 
     if (request.status !== 'PENDING') {
-        throw { status: 400, message: `Không thể phân công: trạng thái yêu cầu là ${request.status}, yêu cầu PENDING` };
+        throw new AppError('Chỉ có thể phân công yêu cầu đang chờ xử lý', 400);
     }
 
     const staff = await User.findByPk(staff_id, {
@@ -387,19 +388,19 @@ const assignRequest = async (id, staff_id, actor) => {
     });
 
     if (!staff) {
-        throw { status: 404, message: 'Không tìm thấy nhân viên được phân công' };
+        throw new AppError('Không tìm thấy nhân viên được phân công', 404);
     }
 
     if (staff.role !== ROLES.STAFF) {
-        throw { status: 400, message: 'Người dùng được chọn không phải nhân viên xử lý' };
+        throw new AppError('Người dùng được chọn không phải nhân viên xử lý', 400);
     }
 
     if (!staff.is_active) {
-        throw { status: 400, message: 'Nhân viên được chọn đã bị vô hiệu hóa' };
+        throw new AppError('Nhân viên được chọn đã bị vô hiệu hóa', 400);
     }
 
     if (!request.room?.building_id || staff.building_id !== request.room.building_id) {
-        throw { status: 400, message: 'Nhân viên được chọn không thuộc cùng tòa nhà với yêu cầu' };
+        throw new AppError('Nhân viên được chọn không thuộc cùng tòa nhà với yêu cầu', 400);
     }
 
     const isCheckout = request.request_type === 'CHECKOUT';
@@ -591,7 +592,7 @@ const getRequestStats = async (caller) => {
     const include = [];
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
-        if (!caller.building_id) throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+        if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         include.push({
             model: Room, as: 'room', attributes: [],
             where: { building_id: caller.building_id }, required: true,

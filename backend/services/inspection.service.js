@@ -13,6 +13,7 @@ const Request = require('../models/request.model');
 const auditService = require('./audit.service');
 const settlementService = require('./settlement.service');
 
+const AppError = require('../utils/AppError');
 const { ROLES } = require('../constants/roles');
 const { REQUEST_SERVICE_BILLING_STATUS } = require('../constants/invoiceEnums');
 
@@ -23,7 +24,7 @@ function ensureBuildingAccess(user, room) {
         (user.role === ROLES.BUILDING_MANAGER || user.role === ROLES.STAFF) &&
         user.building_id !== room.building_id
     ) {
-        throw { status: 403, message: 'Bạn chỉ có thể kiểm tra phòng trong tòa nhà được phân công' };
+        throw new AppError('Bạn chỉ có thể kiểm tra phòng trong tòa nhà được phân công', 403);
     }
 }
 
@@ -37,10 +38,7 @@ async function ensureCheckoutRequest(roomId, staffId) {
         }
     });
     if (!checkoutRequest) {
-        throw {
-            status: 403,
-            message: 'Không thể thực hiện checkout - cần có yêu cầu checkout (CHECKOUT) ở trạng thái IN_PROGRESS được giao cho bạn'
-        };
+        throw new AppError('Không thể thực hiện trả phòng vì chưa có yêu cầu trả phòng đang xử lý được giao cho bạn', 403);
     }
     return checkoutRequest;
 }
@@ -88,17 +86,17 @@ async function resolveContractInspectionContext(roomId, contractId, caller) {
     });
 
     if (!contract) {
-        throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+        throw new AppError('Không tìm thấy hợp đồng', 404);
     }
 
     if (contract.room_id !== roomId) {
-        throw { status: 400, message: 'Dữ liệu không hợp lệ' };
+        throw new AppError('Dữ liệu không hợp lệ', 400);
     }
 
     if (caller.role === ROLES.BUILDING_MANAGER || caller.role === ROLES.STAFF) {
         ensureBuildingAccess(caller, contract.room);
     } else if (caller.role === ROLES.RESIDENT && contract.customer_id !== caller.id) {
-        throw { status: 403, message: 'Bạn không có quyền xem kiểm tra của hợp đồng này' };
+        throw new AppError('Bạn không có quyền xem kiểm tra của hợp đồng này', 403);
     }
 
     return contract;
@@ -148,7 +146,7 @@ async function computeCheckInDiff(room, qrCodes) {
     const conflicts = scannedAssets.filter(a => a.current_room_id && a.current_room_id !== room.id);
     if (conflicts.length > 0) {
         const qrs = conflicts.map(a => a.qr_code).join(', ');
-        throw { status: 409, message: `Tài sản đã được gán cho phòng khác: ${qrs}` };
+        throw new AppError(`Tài sản đã được gán cho phòng khác: ${qrs}`, 409);
     }
 
     // Group scanned by asset_type_id
@@ -279,7 +277,7 @@ function buildConditionMap(assetsInput) {
 // POST /api/inspections/preview (STAFF, CHECK_OUT only)
 const previewInspection = async (roomId, assetsInput, user) => {
     const room = await Room.findByPk(roomId);
-    if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+    if (!room) throw new AppError('Không tìm thấy phòng', 404);
     ensureBuildingAccess(user, room);
     await ensureCheckoutRequest(roomId, user.id);
 
@@ -377,7 +375,7 @@ const previewInspection = async (roomId, assetsInput, user) => {
 // POST /api/inspections (STAFF, CHECK_OUT only)
 const confirmInspection = async (roomId, assetsInput, notes, user) => {
     const room = await Room.findByPk(roomId);
-    if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+    if (!room) throw new AppError('Không tìm thấy phòng', 404);
     ensureBuildingAccess(user, room);
     await ensureCheckoutRequest(roomId, user.id);
 
@@ -635,7 +633,7 @@ async function resolveResidentContract(user, contractId, { forCheckIn = false } 
         const message = forCheckIn
             ? 'Không tìm thấy hợp đồng ở trạng thái chờ nhận phòng'
             : 'Không tìm thấy hợp đồng đang hoạt động';
-        throw { status: 403, message };
+        throw new AppError(message, 403, 'CONTRACT_NOT_AVAILABLE');
     }
 
     return { contract, room: contract.room };
@@ -758,7 +756,7 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
         // Validate building matching before assignment
         for (const asset of assetsToAssign) {
             if (asset.building_id !== room.building_id) {
-                throw { status: 400, message: `Tài sản ${asset.name} (${asset.qr_code}) không thuộc tòa nhà này.` };
+                throw new AppError(`Tài sản ${asset.name} (${asset.qr_code}) không thuộc tòa nhà này.`, 400);
             }
         }
 
@@ -811,7 +809,7 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
 const getInspectionsByRoom = async (roomId, caller, options = {}) => {
     const { contractId } = options;
     const room = await Room.findByPk(roomId);
-    if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+    if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
     // Access control
     if (caller.role === ROLES.BUILDING_MANAGER || caller.role === ROLES.STAFF) {
@@ -820,7 +818,7 @@ const getInspectionsByRoom = async (roomId, caller, options = {}) => {
         const hasContract = await Contract.count({
             where: { room_id: roomId, customer_id: caller.id }
         });
-        if (!hasContract) throw { status: 403, message: 'Bạn không có quyền xem kiểm tra phòng này' };
+        if (!hasContract) throw new AppError('Bạn không có quyền xem kiểm tra phòng này', 403);
     }
     // ADMIN: no restriction
 

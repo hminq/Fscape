@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const ContractTemplate = require('../models/contractTemplate.model');
 
+const AppError = require('../utils/AppError');
 // GET /api/contract-templates
 const getAllTemplates = async (query = {}) => {
     const { page = 1, limit = 10, search, is_active } = query;
@@ -33,15 +34,15 @@ const getAllTemplates = async (query = {}) => {
 // GET /api/contract-templates/:id
 const getTemplateById = async (id) => {
     const template = await ContractTemplate.findByPk(id);
-    if (!template) throw { status: 404, message: 'Không tìm thấy mẫu hợp đồng' };
+    if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng', 404);
     return template;
 };
 
 // POST /api/contract-templates
 const createTemplate = async (data, userId) => {
-    if (!data.name) throw { status: 400, message: 'Tên mẫu hợp đồng là bắt buộc' };
-    if (!data.content) throw { status: 400, message: 'Nội dung mẫu (HTML) là bắt buộc' };
-    if (!data.version) throw { status: 400, message: 'Phiên bản mẫu là bắt buộc' };
+    if (!data.name) throw new AppError('Tên mẫu hợp đồng là bắt buộc', 400);
+    if (!data.content) throw new AppError('Nội dung mẫu hợp đồng là bắt buộc', 400);
+    if (!data.version) throw new AppError('Phiên bản mẫu là bắt buộc', 400);
 
     if (data.is_default) {
         await ContractTemplate.update({ is_default: false }, { where: { is_default: true } });
@@ -57,7 +58,7 @@ const createTemplate = async (data, userId) => {
 // PUT /api/contract-templates/:id
 const updateTemplate = async (id, data) => {
     const template = await ContractTemplate.findByPk(id);
-    if (!template) throw { status: 404, message: 'Không tìm thấy mẫu hợp đồng' };
+    if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng', 404);
 
     if (data.is_default) {
         await ContractTemplate.update(
@@ -73,7 +74,7 @@ const updateTemplate = async (id, data) => {
 // DELETE /api/contract-templates/:id (soft delete)
 const deleteTemplate = async (id) => {
     const template = await ContractTemplate.findByPk(id);
-    if (!template) throw { status: 404, message: 'Không tìm thấy mẫu hợp đồng' };
+    if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng', 404);
 
     await template.update({ is_active: false });
     return { message: `Đã vô hiệu hóa mẫu hợp đồng "${template.name}"` };

@@ -4,6 +4,7 @@ const Building = require('../models/building.model')
 const BuildingFacility = require('../models/buildingFacility.model')
 const { sequelize } = require('../config/db')
 
+const AppError = require('../utils/AppError');
 const getAllFacilities = async ({ page = 1, limit = 10, search, is_active, building_id } = {}, user) => {
     const offset = (page - 1) * limit
     const where = {}
@@ -57,7 +58,7 @@ const getFacilityById = async (id) => {
         }]
     })
 
-    if (!facility) throw { status: 404, message: 'Không tìm thấy tiện ích' }
+    if (!facility) throw new AppError('Không tìm thấy tiện ích', 404);
     return facility
 }
 
@@ -71,7 +72,7 @@ const createFacility = async (data) => {
             normalizedName.toLowerCase()
         )
     });
-    if (duplicate) throw { status: 409, message: `Tiện ích "${normalizedName}" đã tồn tại` };
+    if (duplicate) throw new AppError(`Tiện ích "${normalizedName}" đã tồn tại`, 409);
 
     const facility = await Facility.create({
         name: normalizedName,
@@ -83,8 +84,7 @@ const createFacility = async (data) => {
 
 const updateFacility = async (id, data) => {
     const facility = await Facility.findByPk(id)
-    if (!facility) throw { status: 404, message: 'Không tìm thấy tiện ích' }
-
+    if (!facility) throw new AppError('Không tìm thấy tiện ích', 404);
     if (data.name && data.name.trim() !== facility.name) {
         const normalizedName = data.name.trim();
         const duplicate = await Facility.findOne({
@@ -98,7 +98,7 @@ const updateFacility = async (id, data) => {
                 ]
             }
         });
-        if (duplicate) throw { status: 409, message: `Tiện ích "${normalizedName}" đã tồn tại` }
+        if (duplicate) throw new AppError(`Tiện ích "${normalizedName}" đã tồn tại`, 409);
     }
 
     await facility.update(data)
@@ -107,11 +107,10 @@ const updateFacility = async (id, data) => {
 
 const deleteFacility = async (id) => {
     const facility = await Facility.findByPk(id)
-    if (!facility) throw { status: 404, message: 'Không tìm thấy tiện ích' }
-
+    if (!facility) throw new AppError('Không tìm thấy tiện ích', 404);
     const linkedBuildingsCount = await BuildingFacility.count({ where: { facility_id: id } });
     if (linkedBuildingsCount > 0) {
-        throw { status: 400, message: `Không thể xóa tiện ích vì đang được gán cho ${linkedBuildingsCount} tòa nhà.` };
+        throw new AppError(`Không thể xóa tiện ích vì đang được gán cho ${linkedBuildingsCount} tòa nhà.`, 400);
     }
 
     await facility.destroy()

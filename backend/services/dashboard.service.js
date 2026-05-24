@@ -7,6 +7,7 @@ const Payment = require('../models/payment.model');
 const User = require('../models/user.model');
 const dayjs = require('dayjs');
 
+const AppError = require('../utils/AppError');
 class DashboardService {
   static ROOM_STATUSES = ['OCCUPIED', 'AVAILABLE', 'LOCKED'];
   static REQUEST_SUMMARY_STATUSES = ['PENDING', 'ASSIGNED', 'PRICE_PROPOSED', 'APPROVED', 'IN_PROGRESS', 'DONE', 'COMPLETED'];
@@ -443,7 +444,7 @@ class DashboardService {
   // Aggregate payload for admin dashboard.
   static async getDashboard(user) {
     if (!user || user.role !== 'ADMIN') {
-      throw { status: 403, message: 'Bạn không có quyền truy cập dashboard này' };
+      throw new AppError('Bạn không có quyền truy cập dashboard này', 403);
     }
 
     const [
@@ -483,11 +484,11 @@ class DashboardService {
 
   static async getBuildingManagerDashboard(user) {
     if (!user || user.role !== 'BUILDING_MANAGER') {
-      throw { status: 403, message: 'Bạn không có quyền truy cập dashboard quản lý tòa nhà' };
+      throw new AppError('Bạn không có quyền truy cập dashboard quản lý tòa nhà', 403);
     }
 
     if (!user.building_id) {
-      throw { status: 400, message: 'Quản lý tòa nhà chưa được phân công tòa nhà nào' };
+      throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 400);
     }
 
     const building = await sequelize.models.Building.findByPk(user.building_id, {
@@ -496,7 +497,7 @@ class DashboardService {
     });
 
     if (!building) {
-      throw { status: 404, message: 'Không tìm thấy tòa nhà được phân công' };
+      throw new AppError('Không tìm thấy tòa nhà được phân công', 404);
     }
 
     const [

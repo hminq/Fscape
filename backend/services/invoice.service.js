@@ -7,6 +7,7 @@ const { parseUTCDate, todayUTC } = require('../utils/date.util');
 const { createNotification } = require('./notification.service');
 const { INVOICE_PAYMENT_DEADLINE_DAYS } = require('../constants/jobTimeRules');
 
+const AppError = require('../utils/AppError');
 // Rent invoice generation by billing cycle.
 
 const generateRentInvoices = async () => {
@@ -251,7 +252,7 @@ const getAllInvoices = async (caller, { page = 1, limit = 10, status, invoice_ty
     if (search) where.invoice_number = { [Op.iLike]: `%${search}%` };
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
-        if (!caller.building_id) throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+        if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         roomInclude.where = { building_id: caller.building_id };
         roomInclude.required = true;
     } else if (building_id) {
@@ -284,7 +285,7 @@ const getInvoiceStats = async (caller) => {
 
     const include = [];
     if (caller.role === ROLES.BUILDING_MANAGER) {
-        if (!caller.building_id) throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+        if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         include.push({
             model: Contract, as: 'contract', attributes: [],
             include: [{
@@ -402,13 +403,13 @@ const getInvoiceById = async (caller, invoiceId) => {
     });
 
     if (!invoice) {
-        throw { status: 404, message: 'Không tìm thấy hóa đơn' };
+        throw new AppError('Không tìm thấy hóa đơn', 404);
     }
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
-        if (!caller.building_id) throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+        if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         if (invoice.contract?.room?.building_id !== caller.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền truy cập hóa đơn này.' };
+            throw new AppError('Bạn không có quyền truy cập hóa đơn này.', 403);
         }
     }
 

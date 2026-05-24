@@ -3,6 +3,7 @@ const AuditLog = require('../models/auditLog.model');
 const User = require('../models/user.model');
 const { ROLES } = require('../constants/roles');
 const { parseUTCDate } = require('../utils/date.util');
+const AppError = require('../utils/AppError');
 
 class AuditLogService {
   /**
@@ -55,7 +56,7 @@ class AuditLogService {
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
       if (!caller.building_id) {
-        throw new Error('Quản lý tòa nhà chưa được phân công tòa nhà nào');
+        throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403, 'BUILDING_NOT_ASSIGNED');
       }
       includeUser.where = { building_id: caller.building_id };
       includeUser.required = true;

@@ -1,7 +1,8 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const { createNotification } = require('../services/notification.service');
-const { sendBookingExpiredEmail } = require('../utils/mail.util');
+const { enqueueEmailJob } = require('../services/emailQueue.service');
+const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
 
 const formatCurrency = (amount) =>
     Number(amount).toLocaleString('vi-VN') + ' VND';
@@ -78,7 +79,8 @@ const run = async () => {
                     }
 
                     try {
-                        await sendBookingExpiredEmail(customer.email, {
+                        await enqueueEmailJob(EMAIL_JOB_TYPES.BOOKING_EXPIRED, {
+                            email: customer.email,
                             customerName: customer.full_name || customer.email,
                             bookingNumber: booking.booking_number,
                             bookingId: booking.id,
@@ -87,7 +89,7 @@ const run = async () => {
                             depositAmount: formatCurrency(booking.deposit_amount),
                         });
                     } catch (err) {
-                        console.error(`[BookingExpiryJob] Email failed for ${customer.email}:`, err.message);
+                        console.error(`[BookingExpiryJob] Email enqueue failed for ${customer.email}:`, err.message);
                     }
                 }
             } catch (err) {

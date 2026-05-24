@@ -13,6 +13,7 @@ const Contract = require('../models/contract.model');
 const Booking = require('../models/booking.model');
 const { ROLES } = require('../constants/roles');
 
+const AppError = require('../utils/AppError');
 const ACTIVE_CONTRACT_STATUSES = [
     'DRAFT', 'PENDING_CUSTOMER_SIGNATURE', 'PENDING_MANAGER_SIGNATURE',
     'PENDING_FIRST_PAYMENT', 'PENDING_CHECK_IN',
@@ -28,7 +29,7 @@ const getAllBuildings = async ({ page = 1, limit = 10, location_id, search, is_a
     // Block Managers and Staff from standard generic /buildings list list 
     // Usually they use a specialized manager portal or get their assigned building directly.
     if (userRole === 'BUILDING_MANAGER' || userRole === 'STAFF') {
-        throw { status: 403, message: 'Quản lý và nhân viên phải sử dụng endpoint tòa nhà được phân công' };
+        throw new AppError('Quản lý và nhân viên phải sử dụng endpoint tòa nhà được phân công', 403);
     }
 
     // Public attributes - exclude timestamps for non-admin
@@ -83,7 +84,7 @@ const getBuildingById = async (id, user) => {
 
     // Block Managers and Staff from fetching any random building if it's not theirs
     if (userRole === 'BUILDING_MANAGER' || userRole === 'STAFF') {
-        throw { status: 403, message: 'Quản lý và nhân viên phải sử dụng endpoint tòa nhà được phân công' };
+        throw new AppError('Quản lý và nhân viên phải sử dụng endpoint tòa nhà được phân công', 403);
     }
 
     const publicBuildingAttrs = [
@@ -110,7 +111,7 @@ const getBuildingById = async (id, user) => {
         ]
     });
 
-    if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' };
+    if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     const rooms = await Room.findAll({
         where: { building_id: id },
@@ -143,16 +144,16 @@ const createBuilding = async (data) => {
     const { facilities, images, manager_id, ...buildingData } = data;
 
     if (images && images.length > 5) {
-        throw { status: 400, message: 'Tối đa 5 ảnh' };
+        throw new AppError('Tối đa 5 ảnh', 400);
     }
 
     if (facilities && facilities.length > 20) {
-        throw { status: 400, message: 'Một tòa nhà chỉ được gán tối đa 20 tiện ích' };
+        throw new AppError('Một tòa nhà chỉ được gán tối đa 20 tiện ích', 400);
     }
 
     if (buildingData.total_floors !== undefined && buildingData.total_floors !== null &&
         (buildingData.total_floors < 1 || buildingData.total_floors > 99)) {
-        throw { status: 400, message: 'Số tầng phải từ 1 đến 99' };
+        throw new AppError('Số tầng phải từ 1 đến 99', 400);
     }
 
     // Check for duplicate building name (trim and ignore case)
@@ -164,16 +165,16 @@ const createBuilding = async (data) => {
         )
     });
     if (existing) {
-        throw { status: 409, message: `Tòa nhà "${normalizedName}" đã tồn tại` };
+        throw new AppError(`Tòa nhà "${normalizedName}" đã tồn tại`, 409);
     }
 
     // Validate manager if provided
     if (manager_id) {
         const manager = await User.findByPk(manager_id);
-        if (!manager) throw { status: 404, message: 'Không tìm thấy quản lý' };
-        if (manager.role !== 'BUILDING_MANAGER') throw { status: 400, message: 'Người dùng được chọn không phải quản lý tòa nhà' };
-        if (!manager.is_active) throw { status: 400, message: 'Quản lý được chọn đã bị vô hiệu hóa' };
-        if (manager.building_id) throw { status: 400, message: 'Quản lý được chọn đã được phân công tòa nhà khác' };
+        if (!manager) throw new AppError('Không tìm thấy quản lý', 404);
+        if (manager.role !== 'BUILDING_MANAGER') throw new AppError('Người dùng được chọn không phải quản lý tòa nhà', 400);
+        if (!manager.is_active) throw new AppError('Quản lý được chọn đã bị vô hiệu hóa', 400);
+        if (manager.building_id) throw new AppError('Quản lý được chọn đã được phân công tòa nhà khác', 400);
     }
 
     const transaction = await sequelize.transaction();
@@ -207,20 +208,20 @@ const updateBuilding = async (id, data) => {
     const { facilities, images, is_active, ...updateData } = data;
 
     if (images && images.length > 5) {
-        throw { status: 400, message: 'Tối đa 5 ảnh' };
+        throw new AppError('Tối đa 5 ảnh', 400);
     }
 
     if (facilities && facilities.length > 20) {
-        throw { status: 400, message: 'Một tòa nhà chỉ được gán tối đa 20 tiện ích' };
+        throw new AppError('Một tòa nhà chỉ được gán tối đa 20 tiện ích', 400);
     }
 
     if (updateData.total_floors !== undefined && updateData.total_floors !== null &&
         (updateData.total_floors < 1 || updateData.total_floors > 99)) {
-        throw { status: 400, message: 'Số tầng phải từ 1 đến 99' };
+        throw new AppError('Số tầng phải từ 1 đến 99', 400);
     }
 
     const building = await Building.findByPk(id);
-    if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' };
+    if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     // Check for duplicate name if renaming (trim and ignore case)
     if (updateData.name && updateData.name.trim() !== building.name) {
@@ -236,7 +237,7 @@ const updateBuilding = async (id, data) => {
                 ]
             }
         });
-        if (duplicate) throw { status: 409, message: 'Tên tòa nhà đã tồn tại' };
+        if (duplicate) throw new AppError('Tên tòa nhà đã tồn tại', 409);
     }
 
     const transaction = await sequelize.transaction();
@@ -265,12 +266,12 @@ const updateBuilding = async (id, data) => {
 
 const deleteBuilding = async (id) => {
     const building = await Building.findByPk(id);
-    if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' };
+    if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     // Prevent deletion if the building has existing rooms associated with it
     const roomsCount = await Room.count({ where: { building_id: id } });
     if (roomsCount > 0) {
-        throw { status: 400, message: `Không thể xóa tòa nhà vì đang chứa ${roomsCount} phòng. Vui lòng xóa các phòng trước.` };
+        throw new AppError(`Không thể xóa tòa nhà vì đang chứa ${roomsCount} phòng. Vui lòng xóa các phòng trước.`, 400);
     }
 
     // Unassign manager/staff before deletion to avoid FK constraint violation
@@ -282,14 +283,13 @@ const deleteBuilding = async (id) => {
 
 const toggleBuildingStatus = async (id, isActive, user) => {
     const building = await Building.findByPk(id)
-    if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' }
-
+    if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
     if (user && user.role === 'BUILDING_MANAGER' && user.building_id !== building.id) {
-        throw { status: 403, message: 'Bạn chỉ được quản lý tòa nhà được phân công' }
+        throw new AppError('Bạn chỉ được quản lý tòa nhà được phân công', 403);
     }
 
     if (building.is_active === isActive) {
-        throw { status: 400, message: `Tòa nhà đã ở trạng thái ${isActive ? 'hoạt động' : 'ngừng hoạt động'}` }
+        throw new AppError(`Tòa nhà đã ở trạng thái ${isActive ? 'hoạt động' : 'ngừng hoạt động'}`, 400);
     }
 
     // Block disabling if building has active contracts or bookings
@@ -305,20 +305,14 @@ const toggleBuildingStatus = async (id, isActive, user) => {
                 where: { room_id: { [Op.in]: roomIds }, status: { [Op.in]: ACTIVE_CONTRACT_STATUSES } }
             });
             if (activeContracts > 0) {
-                throw {
-                    status: 409,
-                    message: `Không thể vô hiệu hóa tòa nhà. Hiện có ${activeContracts} hợp đồng đang hoạt động.`
-                };
+                throw new AppError(`Không thể vô hiệu hóa tòa nhà. Hiện có ${activeContracts} hợp đồng đang hoạt động.`, 409);
             }
 
             const activeBookings = await Booking.count({
                 where: { room_id: { [Op.in]: roomIds }, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } }
             });
             if (activeBookings > 0) {
-                throw {
-                    status: 409,
-                    message: `Không thể vô hiệu hóa tòa nhà. Hiện có ${activeBookings} đặt phòng đang chờ xử lý.`
-                };
+                throw new AppError(`Không thể vô hiệu hóa tòa nhà. Hiện có ${activeBookings} đặt phòng đang chờ xử lý.`, 409);
             }
         }
     }

@@ -14,6 +14,7 @@ const { REQUEST_SERVICE_BILLING_STATUS } = require('../constants/invoiceEnums');
 const { billingCycleToMonths, isAllInBillingCycle } = require('../utils/billingCycle.util');
 const { ROLES } = require('../constants/roles');
 
+const AppError = require('../utils/AppError');
 const getScopedSettlementQuery = (user, baseWhere = {}) => {
     if (user.role === ROLES.ADMIN) {
         return { where: baseWhere, scopedBuildingId: null };
@@ -27,7 +28,7 @@ const getScopedSettlementQuery = (user, baseWhere = {}) => {
     }
 
     if (!user.building_id) {
-        throw { status: 403, message: 'Tài khoản chưa được gán tòa nhà' };
+        throw new AppError('Tài khoản chưa được gán tòa nhà', 403);
     }
 
     return { where: baseWhere, scopedBuildingId: user.building_id };
@@ -287,7 +288,7 @@ const getSettlement = async (settlementId, user) => {
     });
 
     if (!settlement) {
-        throw { status: 404, message: 'Không tìm thấy quyết toán' };
+        throw new AppError('Không tìm thấy quyết toán', 404);
     }
 
     return settlement;
@@ -310,7 +311,7 @@ const getSettlementByContract = async (contract_id, user) => {
     });
 
     if (!settlement) {
-        throw { status: 404, message: 'Không tìm thấy quyết toán cho hợp đồng này' };
+        throw new AppError('Không tìm thấy quyết toán cho hợp đồng này', 404);
     }
 
     return settlement;
@@ -323,11 +324,11 @@ const closeSettlement = async (settlementId, user) => {
     const settlement = await getSettlement(settlementId, user);
 
     if (!settlement) {
-        throw { status: 404, message: 'Không tìm thấy quyết toán' };
+        throw new AppError('Không tìm thấy quyết toán', 404);
     }
 
     if (settlement.status !== SETTLEMENT_STATUS.FINALIZED) {
-        throw { status: 400, message: 'Chỉ có thể đóng quyết toán đang chờ xử lý' };
+        throw new AppError('Chỉ có thể đóng quyết toán đang chờ xử lý', 400);
     }
 
     const transaction = await sequelize.transaction();

@@ -5,6 +5,7 @@ const User = require("../models/user.model");
 const Contract = require("../models/contract.model");
 const Room = require("../models/room.model");
 
+const AppError = require('../utils/AppError');
 /**
  * Create a notification and dispatch it to recipients.
  */
@@ -179,7 +180,7 @@ const getUnreadCount = async (userId) => {
  */
 const createBmNotification = async (caller, { title, content, target, room_id }) => {
   if (!caller.building_id) {
-    throw { status: 400, message: "Quản lý tòa nhà chưa được phân công tòa nhà nào" };
+    throw new AppError("Quản lý tòa nhà chưa được phân công tòa nhà nào", 400);
   }
 
   let recipientIds = [];
@@ -201,14 +202,14 @@ const createBmNotification = async (caller, { title, content, target, room_id })
     recipientIds = [...new Set(contracts.map((c) => c.customer_id))];
   } else if (target === "room") {
     if (!room_id) {
-      throw { status: 400, message: "Mã phòng là bắt buộc khi gửi theo phòng" };
+      throw new AppError("Mã phòng là bắt buộc khi gửi theo phòng", 400);
     }
 
     // Ensure the room belongs to manager's building.
     const room = await Room.findByPk(room_id, { attributes: ["id", "building_id"] });
-    if (!room) throw { status: 404, message: "Không tìm thấy phòng" };
+    if (!room) throw new AppError("Không tìm thấy phòng", 404);
     if (room.building_id !== caller.building_id) {
-      throw { status: 403, message: "Phòng không thuộc tòa nhà của bạn" };
+      throw new AppError("Phòng không thuộc tòa nhà của bạn", 403);
     }
 
     const contracts = await Contract.findAll({
@@ -218,11 +219,11 @@ const createBmNotification = async (caller, { title, content, target, room_id })
 
     recipientIds = [...new Set(contracts.map((c) => c.customer_id))];
   } else {
-    throw { status: 400, message: "Đối tượng gửi không hợp lệ. Chỉ hỗ trợ gửi toàn tòa nhà hoặc theo phòng." };
+    throw new AppError("Đối tượng gửi không hợp lệ. Chỉ hỗ trợ gửi toàn tòa nhà hoặc theo phòng.", 400);
   }
 
   if (recipientIds.length === 0) {
-    throw { status: 404, message: "Không tìm thấy cư dân đang hoạt động cho đối tượng được chỉ định" };
+    throw new AppError("Không tìm thấy cư dân đang hoạt động cho đối tượng được chỉ định", 404);
   }
 
   const notification = await createNotification({

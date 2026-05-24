@@ -7,6 +7,7 @@ const { enqueueEmailJob } = require("./emailQueue.service");
 const { EMAIL_JOB_TYPES } = require("../constants/emailJobs");
 const { generateAccessToken } = require("../utils/token.util");
 const { verifyGoogleIdToken } = require("../utils/google.util");
+const AppError = require('../utils/AppError');
 
 const normalizeEmail = (email) => String(email ?? "").trim().toLowerCase();
 const normalizeName = (value) => {
@@ -20,11 +21,11 @@ const queueOtpEmail = async (email, code) => {
 
 const rethrowAuthPersistenceError = (error, fallbackMessage) => {
   if (error?.name === "SequelizeUniqueConstraintError") {
-    throw new Error("Email đã được đăng ký");
+    throw new AppError("Email đã được đăng ký", 409, "EMAIL_ALREADY_EXISTS");
   }
 
   if (error?.name === "SequelizeValidationError") {
-    throw new Error(fallbackMessage);
+    throw new AppError(fallbackMessage, 400, "AUTH_VALIDATION_FAILED");
   }
 
   throw error;
@@ -32,22 +33,24 @@ const rethrowAuthPersistenceError = (error, fallbackMessage) => {
 
 const toSafeAuthError = (error, fallbackMessage) => {
   if (!error) {
-    return new Error(fallbackMessage);
+    return new AppError(fallbackMessage, 400, "AUTH_FAILED");
   }
 
+  if (error instanceof AppError || error.isOperational) return error;
+
   if (error.name === "SequelizeUniqueConstraintError") {
-    return new Error("Email đã được đăng ký");
+    return new AppError("Email đã được đăng ký", 409, "EMAIL_ALREADY_EXISTS");
   }
 
   if (error.name === "SequelizeValidationError" || error.name === "TypeError") {
-    return new Error(fallbackMessage);
+    return new AppError(fallbackMessage, 400, "AUTH_VALIDATION_FAILED");
   }
 
   if (error.message === "Thông tin đăng nhập không hợp lệ" || error.message === "Tài khoản đã bị vô hiệu hóa") {
-    return error;
+    return new AppError(error.message, error.message === "Tài khoản đã bị vô hiệu hóa" ? 403 : 401, "AUTH_FAILED");
   }
 
-  return new Error(fallbackMessage);
+  return new AppError(fallbackMessage, 400, "AUTH_FAILED");
 };
 
 class AuthService {
@@ -60,7 +63,7 @@ class AuthService {
         where: { user_id: user.id, provider: "EMAIL" },
       });
       if (emailAuth) {
-        throw new Error("Email đã được đăng ký");
+        throw new AppError("Email đã được đăng ký", 409, "EMAIL_ALREADY_EXISTS");
       }
     }
 
@@ -145,21 +148,21 @@ class AuthService {
       if (!auth || !auth.is_verified) {
         const existingUser = await User.findOne({ where: { email: normalizedEmail } });
         if (existingUser) {
-          throw new Error("Tài khoản của bạn được đăng ký bằng Google. Vui lòng đăng nhập bằng Google hoặc Đăng ký để tạo mật khẩu.");
+          throw new AppError("Tài khoản của bạn được đăng ký bằng Google. Vui lòng đăng nhập bằng Google hoặc Đăng ký để tạo mật khẩu.", 401, "GOOGLE_ACCOUNT_REQUIRED");
         }
-        throw new Error("Thông tin đăng nhập không hợp lệ");
+        throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
       }
 
       if (!auth.User) {
-        throw new Error("Thông tin đăng nhập không hợp lệ");
+        throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
       }
 
       if (auth.User.is_active === false) {
-        throw new Error("Tài khoản đã bị vô hiệu hóa");
+        throw new AppError("Tài khoản đã bị vô hiệu hóa", 403, "ACCOUNT_DISABLED");
       }
 
       const match = await comparePassword(password, auth.password_hash);
-      if (!match) throw new Error("Thông tin đăng nhập không hợp lệ");
+      if (!match) throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
 
       return {
         access_token: generateAccessToken(auth.User),
@@ -194,20 +197,18 @@ class AuthService {
       if (!auth || !auth.is_verified) {
         const existingUser = await User.findOne({ where: { email: normalizedEmail } });
         if (existingUser) {
-          throw new Error("Tài khoản của bạn được đăng ký bằng Google. Vui lòng đăng nhập bằng Google hoặc Đăng ký để tạo mật khẩu.");
+          throw new AppError("Tài khoản của bạn được đăng ký bằng Google. Vui lòng đăng nhập bằng Google hoặc Đăng ký để tạo mật khẩu.", 401, "GOOGLE_ACCOUNT_REQUIRED");
         }
-        throw new Error("Thông tin đăng nhập không hợp lệ");
+        throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
       }
-      if (!auth.User) throw new Error("Thông tin đăng nhập không hợp lệ");
+      if (!auth.User) throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
       if (auth.User.role !== 'RESIDENT') {
-        const err = new Error("Chỉ cư dân được phép đăng nhập tại đây");
-        err.status = 403;
-        throw err;
+        throw new AppError("Chỉ cư dân được phép đăng nhập tại đây", 403, "RESIDENT_REQUIRED");
       }
-      if (auth.User.is_active === false) throw new Error("Tài khoản đã bị vô hiệu hóa");
+      if (auth.User.is_active === false) throw new AppError("Tài khoản đã bị vô hiệu hóa", 403, "ACCOUNT_DISABLED");
 
       const match = await comparePassword(password, auth.password_hash);
-      if (!match) throw new Error("Thông tin đăng nhập không hợp lệ");
+      if (!match) throw new AppError("Thông tin đăng nhập không hợp lệ", 401, "INVALID_CREDENTIALS");
 
       await auth.User.update({ last_login_at: new Date() });
 
@@ -247,7 +248,7 @@ class AuthService {
           transaction,
         });
 
-        if (!auth) throw new Error("Không tìm thấy tài khoản");
+        if (!auth) throw new AppError("Không tìm thấy tài khoản", 404, "ACCOUNT_NOT_FOUND");
 
         auth.password_hash = passwordHash;
         await auth.save({ transaction });
@@ -266,7 +267,7 @@ class AuthService {
     const googleId = payload.sub;
     const name = payload.name;
 
-    if (!payload.email_verified) throw new Error("Email Google chưa được xác minh");
+    if (!payload.email_verified) throw new AppError("Email Google chưa được xác minh", 400, "GOOGLE_EMAIL_NOT_VERIFIED");
 
     let user = await User.findOne({ where: { email } });
 
@@ -281,7 +282,7 @@ class AuthService {
 
       if (existingGoogleAuth) {
         if (existingGoogleAuth.user_id !== user.id) {
-          throw new Error("Tài khoản Google đã được liên kết với người dùng khác");
+          throw new AppError("Tài khoản Google đã được liên kết với người dùng khác", 409, "GOOGLE_ACCOUNT_LINKED");
         }
       } else {
         await AuthProvider.create({

@@ -4,6 +4,7 @@ const { sequelize } = require('../config/db');
 const Asset = require('../models/asset.model');
 const { ROLES } = require('../constants/roles');
 
+const AppError = require('../utils/AppError');
 const TIMESTAMP_FIELDS = ['created_at', 'updated_at', 'createdAt', 'updatedAt'];
 
 const getAllAssetTypes = async (query = {}, user = {}) => {
@@ -50,7 +51,7 @@ const getAllAssetTypes = async (query = {}, user = {}) => {
 
 const getAssetTypeById = async (id, user = {}) => {
     const assetType = await AssetType.findByPk(id);
-    if (!assetType) throw { status: 404, message: 'Không tìm thấy loại tài sản' };
+    if (!assetType) throw new AppError('Không tìm thấy loại tài sản', 404);
 
     if (user.role !== ROLES.ADMIN) {
         const data = assetType.toJSON();
@@ -62,7 +63,7 @@ const getAssetTypeById = async (id, user = {}) => {
 
 const createAssetType = async (data) => {
     if (!data.name) {
-        throw { status: 400, message: 'Tên loại tài sản là bắt buộc' };
+        throw new AppError('Tên loại tài sản là bắt buộc', 400);
     }
 
     const normalizedName = data.name.trim();
@@ -73,11 +74,11 @@ const createAssetType = async (data) => {
         )
     });
     if (duplicate) {
-        throw { status: 409, message: `Loại tài sản "${normalizedName}" đã tồn tại` };
+        throw new AppError(`Loại tài sản "${normalizedName}" đã tồn tại`, 409);
     }
 
     if (data.default_price !== undefined && data.default_price < 0) {
-        throw { status: 400, message: 'Giá mặc định phải từ 0 trở lên' };
+        throw new AppError('Giá mặc định phải từ 0 trở lên', 400);
     }
 
     return AssetType.create({ ...data, name: normalizedName });
@@ -85,7 +86,7 @@ const createAssetType = async (data) => {
 
 const updateAssetType = async (id, data) => {
     const assetType = await AssetType.findByPk(id);
-    if (!assetType) throw { status: 404, message: 'Không tìm thấy loại tài sản' };
+    if (!assetType) throw new AppError('Không tìm thấy loại tài sản', 404);
 
     if (data.name && data.name.trim() !== assetType.name) {
         const normalizedName = data.name.trim();
@@ -101,13 +102,13 @@ const updateAssetType = async (id, data) => {
             }
         });
         if (duplicate) {
-            throw { status: 409, message: `Loại tài sản "${normalizedName}" đã tồn tại` };
+            throw new AppError(`Loại tài sản "${normalizedName}" đã tồn tại`, 409);
         }
         data.name = normalizedName;
     }
 
     if (data.default_price !== undefined && data.default_price < 0) {
-        throw { status: 400, message: 'Giá mặc định phải từ 0 trở lên' };
+        throw new AppError('Giá mặc định phải từ 0 trở lên', 400);
     }
 
     await assetType.update(data);
@@ -116,12 +117,12 @@ const updateAssetType = async (id, data) => {
 
 const deleteAssetType = async (id) => {
     const assetType = await AssetType.findByPk(id);
-    if (!assetType) throw { status: 404, message: 'Không tìm thấy loại tài sản' };
+    if (!assetType) throw new AppError('Không tìm thấy loại tài sản', 404);
 
     // Check if any assets are using this type
     const count = await Asset.count({ where: { asset_type_id: id } });
     if (count > 0) {
-        throw { status: 400, message: `Không thể xóa loại tài sản đang có ${count} tài sản sử dụng. Vui lòng gán lại loại tài sản cho các tài sản đó trước.` };
+        throw new AppError(`Không thể xóa loại tài sản đang có ${count} tài sản sử dụng. Vui lòng gán lại loại tài sản cho các tài sản đó trước.`, 400);
     }
 
     await assetType.destroy();

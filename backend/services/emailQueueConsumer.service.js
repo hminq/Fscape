@@ -9,11 +9,16 @@ const {
 } = require("../config/sqs");
 const { EMAIL_JOB_TYPES } = require("../constants/emailJobs");
 const {
+  sendBookingExpiredEmail,
   sendContractSigningEmail,
   sendManagerSigningEmail,
   sendOtpMail,
+  sendPaymentReminderEmail,
   sendPaymentReceivedEmail,
+  sendPaymentUrgentReminderEmail,
   sendRenewalSigningEmail,
+  sendSigningReminderEmail,
+  sendSigningUrgentReminderEmail,
   sendWelcomeCheckInEmail,
 } = require("../utils/mail.util");
 
@@ -33,8 +38,23 @@ async function handleEmailJob(job) {
   }
 
   switch (job.type) {
+    case EMAIL_JOB_TYPES.BOOKING_EXPIRED:
+      await sendBookingExpiredEmail(job.payload?.email, job.payload);
+      return;
     case EMAIL_JOB_TYPES.CONTRACT_SIGNING_INVITE:
       await sendContractSigningEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.CONTRACT_SIGNING_REMINDER:
+      await sendSigningReminderEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.CONTRACT_SIGNING_URGENT:
+      await sendSigningUrgentReminderEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.FIRST_RENT_REMINDER:
+      await sendPaymentReminderEmail(job.payload?.email, job.payload);
+      return;
+    case EMAIL_JOB_TYPES.FIRST_RENT_URGENT:
+      await sendPaymentUrgentReminderEmail(job.payload?.email, job.payload);
       return;
     case EMAIL_JOB_TYPES.MANAGER_SIGNING_INVITE:
       await sendManagerSigningEmail(job.payload?.email, job.payload);

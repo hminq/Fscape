@@ -1,5 +1,6 @@
 const { sequelize } = require("../config/db");
 const { Op } = require("sequelize");
+const AppError = require('../utils/AppError');
 const {
   DEPOSIT_MONTHS,
   MIN_CHECKIN_DAYS,
@@ -26,10 +27,7 @@ const createBooking = async (userId, bookingData) => {
   const resolvedDurationMonths = Number(duration_months);
 
   if (!isValidContractLength(resolvedDurationMonths)) {
-    throw {
-      status: 400,
-      message: "Thời hạn hợp đồng chỉ hỗ trợ 6 hoặc 12 tháng.",
-    };
+    throw new AppError("Thời hạn hợp đồng chỉ hỗ trợ 6 hoặc 12 tháng.", 400);
   }
 
   // Validate check-in date within [today + MIN, today + MAX].
@@ -41,20 +39,13 @@ const createBooking = async (userId, bookingData) => {
   maxCheckIn.setUTCDate(maxCheckIn.getUTCDate() + MAX_CHECKIN_DAYS);
   const checkIn = parseUTCDate(check_in_date);
   if (checkIn < minCheckIn || checkIn > maxCheckIn) {
-    throw {
-      status: 400,
-      message: `Ngày nhận phòng phải trong khoảng ${MIN_CHECKIN_DAYS}-${MAX_CHECKIN_DAYS} ngày kể từ hôm nay.`,
-    };
+    throw new AppError(`Ngày nhận phòng phải trong khoảng ${MIN_CHECKIN_DAYS}-${MAX_CHECKIN_DAYS} ngày kể từ hôm nay.`, 400);
   }
 
   // Validate billing cycle from user input
   const resolvedBillingCycle = normalizeBillingCycle(billing_cycle);
   if (!isValidBookingBillingCycle(resolvedBillingCycle)) {
-    throw {
-      status: 400,
-      message:
-        "Chu kỳ thanh toán không hợp lệ.",
-    };
+    throw new AppError("Chu kỳ thanh toán không hợp lệ.", 400);
   }
 
   const transaction = await sequelize.transaction();
@@ -69,11 +60,11 @@ const createBooking = async (userId, bookingData) => {
     });
 
     if (!room) {
-      throw { status: 404, message: "Không tìm thấy phòng." };
+      throw new AppError("Không tìm thấy phòng.", 404);
     }
 
     if (room.status !== "AVAILABLE") {
-      throw { status: 400, message: "Phòng này hiện không còn trống." };
+      throw new AppError("Phòng này hiện không còn trống.", 400);
     }
 
     // 2) Fetch room type.
@@ -259,17 +250,17 @@ const getBookingById = async (id, caller) => {
     ],
   });
 
-  if (!booking) throw { status: 404, message: "Không tìm thấy đơn đặt phòng." };
+  if (!booking) throw new AppError("Không tìm thấy đơn đặt phòng.", 404);
 
   const role = caller.role || caller;
   if (role === 'BUILDING_MANAGER') {
     const bookingBuildingId = booking.room?.building?.id || booking.room?.building_id;
     if (!bookingBuildingId || bookingBuildingId !== caller.building_id) {
-      throw { status: 403, message: "Bạn không có quyền truy cập đơn này." };
+      throw new AppError("Bạn không có quyền truy cập đơn này.", 403);
     }
   } else if (role !== 'ADMIN') {
     if (booking.customer_id !== caller.id)
-      throw { status: 403, message: "Bạn không có quyền truy cập đơn này." };
+      throw new AppError("Bạn không có quyền truy cập đơn này.", 403);
   }
 
   return booking;

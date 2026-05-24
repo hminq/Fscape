@@ -7,6 +7,7 @@ const Building = require('../models/building.model');
 const Room = require('../models/room.model');
 const Request = require('../models/request.model');
 
+const AppError = require('../utils/AppError');
 const { ROLES } = require('../constants/roles');
 
 const TIMESTAMP_FIELDS = ['created_at', 'updated_at', 'createdAt', 'updatedAt'];
@@ -24,7 +25,7 @@ function ensureBuildingAccess(user, buildingId) {
         (user.role === ROLES.BUILDING_MANAGER || user.role === ROLES.STAFF) &&
         user.building_id !== buildingId
     ) {
-        throw { status: 403, message: 'Bạn chỉ có thể truy cập tài sản trong tòa nhà được phân công' };
+        throw new AppError('Bạn chỉ có thể truy cập tài sản trong tòa nhà được phân công', 403);
     }
 }
 
@@ -233,7 +234,7 @@ const getAssetById = async (id, user = {}) => {
             }
         ]
     });
-    if (!asset) throw { status: 404, message: 'Không tìm thấy tài sản' };
+    if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
 
@@ -252,14 +253,14 @@ const createAsset = async (data) => {
 
         // Validate building exists
         const building = await Building.findByPk(data.building_id);
-        if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' };
+        if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
         // If assigning to room at creation, validate room is in same building
         if (data.current_room_id) {
             const room = await Room.findByPk(data.current_room_id);
-            if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+            if (!room) throw new AppError('Không tìm thấy phòng', 404);
             if (room.building_id !== data.building_id) {
-                throw { status: 400, message: 'Phòng không thuộc tòa nhà được chỉ định' };
+                throw new AppError('Phòng không thuộc tòa nhà được chỉ định', 400);
             }
         }
 
@@ -296,20 +297,20 @@ const createBatchAssets = async (data) => {
     const { name, building_id, asset_type_id, quantity = 1, price } = data;
 
     if (!name || !building_id) {
-        throw { status: 400, message: 'Tên và mã tòa nhà là bắt buộc' };
+        throw new AppError('Tên và mã tòa nhà là bắt buộc', 400);
     }
     if (!quantity || quantity < 1 || quantity > 100) {
-        throw { status: 400, message: 'Số lượng phải từ 1 đến 100' };
+        throw new AppError('Số lượng phải từ 1 đến 100', 400);
     }
 
     const building = await Building.findByPk(building_id);
-    if (!building) throw { status: 404, message: 'Không tìm thấy tòa nhà' };
+    if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     let resolvedPrice = price || null;
     if (asset_type_id) {
         const AssetType = require('../models/assetType.model');
         const at = await AssetType.findByPk(asset_type_id);
-        if (!at) throw { status: 404, message: 'Không tìm thấy loại tài sản' };
+        if (!at) throw new AppError('Không tìm thấy loại tài sản', 404);
         if (!resolvedPrice && at.default_price) {
             resolvedPrice = at.default_price;
         }
@@ -350,7 +351,7 @@ const createBatchAssets = async (data) => {
 // PUT /api/assets/:id (ADMIN only)
 const updateAsset = async (id, data, user) => {
     const asset = await Asset.findByPk(id);
-    if (!asset) throw { status: 404, message: 'Không tìm thấy tài sản' };
+    if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
 
@@ -371,16 +372,16 @@ const updateAsset = async (id, data, user) => {
 
         if (buildingChanged) {
             if (oldStatus === 'IN_USE') {
-                throw { status: 400, message: 'Chỉ có thể chuyển tòa nhà khi tài sản không ở trạng thái đang sử dụng' };
+                throw new AppError('Chỉ có thể chuyển tòa nhà khi tài sản không ở trạng thái đang sử dụng', 400);
             }
 
             if (oldRoom) {
-                throw { status: 400, message: 'Chỉ có thể chuyển tòa nhà khi tài sản đang ở kho' };
+                throw new AppError('Chỉ có thể chuyển tòa nhà khi tài sản đang ở kho', 400);
             }
 
             const building = await Building.findByPk(targetBuildingId);
             if (!building) {
-                throw { status: 404, message: 'Không tìm thấy tòa nhà đích' };
+                throw new AppError('Không tìm thấy tòa nhà đích', 404);
             }
 
             data.current_room_id = null;
@@ -391,18 +392,18 @@ const updateAsset = async (id, data, user) => {
 
         if (targetRoomId) {
             const room = await Room.findByPk(targetRoomId);
-            if (!room) throw { status: 404, message: 'Không tìm thấy phòng' };
+            if (!room) throw new AppError('Không tìm thấy phòng', 404);
             if (room.building_id !== targetBuildingId) {
-                throw { status: 400, message: 'Phòng không thuộc tòa nhà của tài sản' };
+                throw new AppError('Phòng không thuộc tòa nhà của tài sản', 400);
             }
         }
 
         if (data.current_room_id !== undefined && data.current_room_id !== oldRoom) {
-            throw { status: 400, message: 'Không thể đổi phòng tại màn hình này. Vui lòng dùng quy trình check-in hoặc checkout tài sản.' };
+            throw new AppError('Không thể đổi phòng tại màn hình này. Vui lòng dùng quy trình check-in hoặc checkout tài sản.', 400);
         }
 
         if (data.status !== undefined && data.status !== oldStatus) {
-            throw { status: 400, message: 'Không thể đổi trạng thái tại màn hình này. Trạng thái tài sản được cập nhật qua quy trình vận hành.' };
+            throw new AppError('Không thể đổi trạng thái tại màn hình này. Trạng thái tài sản được cập nhật qua quy trình vận hành.', 400);
         }
 
         await asset.update(data, { transaction });
@@ -442,12 +443,12 @@ const updateAsset = async (id, data, user) => {
 // PATCH /api/assets/:id/assign (STAFF, BM, ADMIN)
 const assignAsset = async (id, { room_id, notes }, user) => {
     const asset = await Asset.findByPk(id);
-    if (!asset) throw { status: 404, message: 'Không tìm thấy tài sản' };
+    if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
 
     if (asset.status === 'MAINTENANCE') {
-        throw { status: 409, message: 'Không thể gán tài sản đang bảo trì' };
+        throw new AppError('Không thể gán tài sản đang bảo trì', 409);
     }
 
     const oldRoom = asset.current_room_id;
@@ -459,24 +460,24 @@ const assignAsset = async (id, { room_id, notes }, user) => {
         if (room_id) {
             // CHECK_IN only: storage -> room
             const room = await Room.findByPk(room_id);
-            if (!room) throw { status: 404, message: 'Không tìm thấy phòng đích' };
+            if (!room) throw new AppError('Không tìm thấy phòng đích', 404);
             if (room.building_id !== asset.building_id) {
-                throw { status: 400, message: 'Phòng đích không cùng tòa nhà với tài sản' };
+                throw new AppError('Phòng đích không cùng tòa nhà với tài sản', 400);
             }
 
             if (!oldRoom) {
                 action = 'CHECK_IN';
             } else if (oldRoom === room_id) {
-                throw { status: 400, message: 'Tài sản đã ở trong phòng này' };
+                throw new AppError('Tài sản đã ở trong phòng này', 400);
             } else {
-                throw { status: 400, message: 'Không thể chuyển trực tiếp tài sản giữa hai phòng. Vui lòng thu hồi về kho trước.' };
+                throw new AppError('Không thể chuyển trực tiếp tài sản giữa hai phòng. Vui lòng thu hồi về kho trước.', 400);
             }
 
             await asset.update({ current_room_id: room_id, status: 'IN_USE' }, { transaction });
         } else {
             // CHECK_OUT
             if (!oldRoom) {
-                throw { status: 400, message: 'Tài sản chưa được gán cho phòng nào' };
+                throw new AppError('Tài sản chưa được gán cho phòng nào', 400);
             }
             action = 'CHECK_OUT';
             await asset.update({ current_room_id: null, status: 'AVAILABLE' }, { transaction });
@@ -504,10 +505,10 @@ const assignAsset = async (id, { room_id, notes }, user) => {
 // DELETE /api/assets/:id (ADMIN only)
 const deleteAsset = async (id) => {
     const asset = await Asset.findByPk(id);
-    if (!asset) throw { status: 404, message: 'Không tìm thấy tài sản' };
+    if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     if (asset.status === 'IN_USE') {
-        throw { status: 409, message: 'Không thể xóa tài sản đang sử dụng. Vui lòng thu hồi trước.' };
+        throw new AppError('Không thể xóa tài sản đang sử dụng. Vui lòng thu hồi trước.', 409);
     }
 
     // Check if asset is referenced in active maintenance requests
@@ -518,7 +519,7 @@ const deleteAsset = async (id) => {
         }
     });
     if (activeRequest) {
-        throw { status: 409, message: 'Không thể xóa tài sản có yêu cầu bảo trì đang hoạt động' };
+        throw new AppError('Không thể xóa tài sản có yêu cầu bảo trì đang hoạt động', 409);
     }
 
     await asset.destroy();

@@ -6,6 +6,13 @@ const User = require('../models/user.model');
 const Building = require('../models/building.model');
 const { AuthProvider } = require('../models/authProvider.model');
 const { ROLES, ADMIN_MANAGEABLE_ROLES } = require('../constants/roles');
+const AppError = require('../utils/AppError');
+
+const ROLE_LABELS = {
+  [ROLES.ADMIN]: 'quản trị viên',
+  [ROLES.BUILDING_MANAGER]: 'quản lý tòa nhà',
+  [ROLES.STAFF]: 'nhân viên',
+};
 
 class AdminUserService {
 
@@ -17,36 +24,36 @@ class AdminUserService {
 
     // --- Required fields ---
     if (!email || !role || !first_name || !last_name || !phone) {
-      throw new Error('Email, vai trò, họ, tên và số điện thoại là bắt buộc');
+      throw new AppError('Email, vai trò, họ, tên và số điện thoại là bắt buộc', 400, 'MISSING_REQUIRED_FIELDS');
     }
 
     // --- Format validation ---
     if (!ADMIN_MANAGEABLE_ROLES.includes(role)) {
-      throw new Error(`Vai trò phải là một trong: ${ADMIN_MANAGEABLE_ROLES.join(', ')}`);
+      throw new AppError(`Vai trò phải là một trong: ${ADMIN_MANAGEABLE_ROLES.map((item) => ROLE_LABELS[item] || item).join(', ')}`, 400, 'INVALID_ROLE');
     }
 
     const generatedPassword = crypto.randomBytes(4).toString('hex');
 
     if (!/^[0-9]{8,15}$/.test(phone)) {
-      throw new Error('Số điện thoại phải gồm 8-15 chữ số');
+      throw new AppError('Số điện thoại phải gồm 8-15 chữ số', 400, 'INVALID_PHONE');
     }
 
     // --- Email & Phone uniqueness ---
     const existedEmail = await User.findOne({ where: { email } });
     if (existedEmail) {
-      throw new Error('Email đã tồn tại');
+      throw new AppError('Email đã tồn tại', 409, 'EMAIL_ALREADY_EXISTS');
     }
 
     const existedPhone = await User.findOne({ where: { phone } });
     if (existedPhone) {
-      throw new Error('Số điện thoại đã tồn tại');
+      throw new AppError('Số điện thoại đã tồn tại', 409, 'PHONE_ALREADY_EXISTS');
     }
 
     // --- Building validation ---
     if (building_id) {
       const building = await Building.findByPk(building_id);
       if (!building) {
-        throw new Error('Không tìm thấy tòa nhà');
+        throw new AppError('Không tìm thấy tòa nhà', 404, 'BUILDING_NOT_FOUND');
       }
 
       if (role === ROLES.BUILDING_MANAGER) {
@@ -58,7 +65,7 @@ class AdminUserService {
           },
         });
         if (existingManager) {
-          throw new Error('Tòa nhà này đã có quản lý đang hoạt động');
+          throw new AppError('Tòa nhà này đã có quản lý đang hoạt động', 409, 'BUILDING_MANAGER_EXISTS');
         }
       }
     }
@@ -145,7 +152,7 @@ class AdminUserService {
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
       if (!caller.building_id) {
-        throw new Error('Quản lý tòa nhà chưa được phân công tòa nhà nào');
+        throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403, 'BUILDING_NOT_ASSIGNED');
       }
 
       where.building_id = caller.building_id;
@@ -170,7 +177,7 @@ class AdminUserService {
       };
     }
 
-    throw new Error('Bạn không có quyền thực hiện hành động này');
+    throw new AppError('Bạn không có quyền thực hiện hành động này', 403, 'FORBIDDEN');
   }
 
   // =========================
@@ -197,7 +204,7 @@ class AdminUserService {
     const where = {};
 
     if (caller.role === ROLES.BUILDING_MANAGER) {
-      if (!caller.building_id) throw new Error('Quản lý tòa nhà chưa được phân công tòa nhà nào');
+      if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403, 'BUILDING_NOT_ASSIGNED');
       where.building_id = caller.building_id;
     }
 
@@ -228,15 +235,15 @@ class AdminUserService {
   static async updateUserStatus(userId, isActive) {
     const user = await User.findByPk(userId);
     if (!user) {
-      throw new Error('Không tìm thấy người dùng');
+      throw new AppError('Không tìm thấy người dùng', 404, 'USER_NOT_FOUND');
     }
 
     if (user.role === ROLES.ADMIN) {
-      throw new Error('Không thể thay đổi trạng thái tài khoản quản trị viên');
+      throw new AppError('Không thể thay đổi trạng thái tài khoản quản trị viên', 400, 'ADMIN_STATUS_LOCKED');
     }
 
     if (user.is_active === isActive) {
-      throw new Error(`Trạng thái người dùng đã là ${isActive ? 'hoạt động' : 'ngừng hoạt động'}`);
+      throw new AppError(`Trạng thái người dùng đã là ${isActive ? 'hoạt động' : 'ngừng hoạt động'}`, 400, 'USER_STATUS_UNCHANGED');
     }
 
     user.is_active = isActive;
@@ -249,16 +256,16 @@ class AdminUserService {
   // =========================
   static async assignBuilding(userId, buildingId) {
     const user = await User.findByPk(userId);
-    if (!user) throw new Error('Không tìm thấy người dùng');
+    if (!user) throw new AppError('Không tìm thấy người dùng', 404, 'USER_NOT_FOUND');
 
     if (!ADMIN_MANAGEABLE_ROLES.includes(user.role)) {
-      throw new Error('Chỉ có thể phân công tòa nhà cho quản lý hoặc nhân viên');
+      throw new AppError('Chỉ có thể phân công tòa nhà cho quản lý hoặc nhân viên', 400, 'INVALID_ASSIGNMENT_ROLE');
     }
 
     // buildingId = null means unassign
     if (buildingId) {
       const building = await Building.findByPk(buildingId);
-      if (!building) throw new Error('Không tìm thấy tòa nhà');
+      if (!building) throw new AppError('Không tìm thấy tòa nhà', 404, 'BUILDING_NOT_FOUND');
 
       // BM uniqueness: one active BM per building
       if (user.role === ROLES.BUILDING_MANAGER) {
@@ -271,7 +278,7 @@ class AdminUserService {
           },
         });
         if (existingBM) {
-          throw new Error('Tòa nhà này đã có quản lý đang hoạt động. Vui lòng gỡ quản lý hiện tại trước.');
+          throw new AppError('Tòa nhà này đã có quản lý đang hoạt động. Vui lòng gỡ quản lý hiện tại trước.', 409, 'BUILDING_MANAGER_EXISTS');
         }
       }
     }
@@ -287,17 +294,17 @@ class AdminUserService {
   // =========================
   static async resetPassword(userId) {
     const user = await User.findByPk(userId);
-    if (!user) throw new Error('Không tìm thấy người dùng');
+    if (!user) throw new AppError('Không tìm thấy người dùng', 404, 'USER_NOT_FOUND');
 
     if (![ROLES.BUILDING_MANAGER, ROLES.STAFF].includes(user.role)) {
-      throw new Error('Chỉ có thể đặt lại mật khẩu cho quản lý tòa nhà hoặc nhân viên');
+      throw new AppError('Chỉ có thể đặt lại mật khẩu cho quản lý tòa nhà hoặc nhân viên', 400, 'INVALID_RESET_PASSWORD_ROLE');
     }
 
     const newPassword = crypto.randomBytes(4).toString('hex');
     const passwordHash = await bcrypt.hash(newPassword, 10);
 
     const auth = await AuthProvider.findOne({ where: { user_id: userId, provider: 'EMAIL' } });
-    if (!auth) throw new Error('Người dùng không có thông tin đăng nhập bằng email');
+    if (!auth) throw new AppError('Người dùng không có thông tin đăng nhập bằng email', 400, 'EMAIL_AUTH_NOT_FOUND');
 
     auth.password_hash = passwordHash;
     await auth.save();

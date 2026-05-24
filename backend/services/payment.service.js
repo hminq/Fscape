@@ -7,10 +7,8 @@ const { enqueueEmailJob } = require('./emailQueue.service');
 const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
 
-const PAYOS_GATEWAY_ERROR = {
-    status: 502,
-    message: 'Cổng thanh toán đang gặp sự cố. Vui lòng thử lại sau.'
-};
+const AppError = require('../utils/AppError');
+const PAYOS_GATEWAY_ERROR = new AppError('Cổng thanh toán đang gặp sự cố. Vui lòng thử lại sau.', 502, 'PAYMENT_GATEWAY_ERROR');
 
 /**
  * Resolve amount sent to PayOS.
@@ -84,7 +82,7 @@ const createBookingPaymentUrlPayOS = async (userId, booking_id) => {
     });
 
     if (!booking) {
-        throw { status: 404, message: "Không tìm thấy đơn đặt phòng hợp lệ hoặc đơn đã được xử lý" };
+        throw new AppError("Không tìm thấy đơn đặt phòng hợp lệ hoặc đơn đã được xử lý", 404);
     }
 
     const orderCode = Date.now();
@@ -137,7 +135,7 @@ const createInvoicePaymentUrlPayOS = async (userId, invoice_id) => {
     });
 
     if (!invoice) {
-        throw { status: 404, message: "Không tìm thấy hóa đơn cần thanh toán" };
+        throw new AppError("Không tìm thấy hóa đơn cần thanh toán", 404);
     }
 
     const paymentType = invoice.invoice_type === 'SERVICE' ? 'REQUEST' : 'RENT';

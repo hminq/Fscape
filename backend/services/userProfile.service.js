@@ -1,5 +1,6 @@
 const User = require('../models/user.model');
 const CustomerProfile = require('../models/customerProfile.model');
+const AppError = require('../utils/AppError');
 
 const getProfileById = async (userId) => {
   const user = await User.findByPk(userId, {
@@ -12,9 +13,7 @@ const getProfileById = async (userId) => {
   });
 
   if (!user) {
-    const err = new Error('Không tìm thấy người dùng');
-    err.status = 404;
-    throw err;
+    throw new AppError('Không tìm thấy người dùng', 404, 'USER_NOT_FOUND');
   }
 
   return user;
@@ -26,9 +25,7 @@ const PROFILE_FIELDS = ['gender', 'date_of_birth', 'permanent_address', 'emergen
 const updateProfileById = async (userId, payload) => {
   const user = await User.findByPk(userId);
   if (!user) {
-    const err = new Error('Không tìm thấy người dùng');
-    err.status = 404;
-    throw err;
+    throw new AppError('Không tìm thấy người dùng', 404, 'USER_NOT_FOUND');
   }
 
   // Update user fields

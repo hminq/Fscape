@@ -1,6 +1,7 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 
+const AppError = require('../utils/AppError');
 /**
  * Get paginated locations.
  */
@@ -49,7 +50,7 @@ const getLocationById = async (id) => {
         ]
     });
 
-    if (!location) throw { status: 404, message: 'Không tìm thấy khu vực' };
+    if (!location) throw new AppError('Không tìm thấy khu vực', 404);
     return location;
 };
 
@@ -66,7 +67,7 @@ const createLocation = async (data) => {
             normalizedName.toLowerCase()
         )
     });
-    if (existing) throw { status: 409, message: `Khu vực "${normalizedName}" đã tồn tại` };
+    if (existing) throw new AppError(`Khu vực "${normalizedName}" đã tồn tại`, 409);
 
     return await Location.create({ ...data, name: normalizedName });
 };
@@ -77,7 +78,7 @@ const createLocation = async (data) => {
 const updateLocation = async (id, data) => {
     const { Location } = sequelize.models;
     const location = await Location.findByPk(id);
-    if (!location) throw { status: 404, message: 'Không tìm thấy khu vực' };
+    if (!location) throw new AppError('Không tìm thấy khu vực', 404);
 
     if (data.name && data.name.trim() !== location.name) {
         const normalizedName = data.name.trim();
@@ -92,7 +93,7 @@ const updateLocation = async (id, data) => {
                 ]
             }
         });
-        if (duplicate) throw { status: 409, message: `Khu vực "${normalizedName}" đã tồn tại` };
+        if (duplicate) throw new AppError(`Khu vực "${normalizedName}" đã tồn tại`, 409);
     }
 
     // Restrict what can be updated via generic PUT (e.g., prevent changing is_active)
@@ -107,7 +108,7 @@ const updateLocation = async (id, data) => {
 const deleteLocation = async (id) => {
     const { Location, Building, University } = sequelize.models;
     const location = await Location.findByPk(id);
-    if (!location) throw { status: 404, message: 'Không tìm thấy khu vực' };
+    if (!location) throw new AppError('Không tìm thấy khu vực', 404);
 
     const [buildingsCount, universitiesCount] = await Promise.all([
         Building.count({ where: { location_id: id } }),
@@ -115,10 +116,7 @@ const deleteLocation = async (id) => {
     ]);
 
     if (buildingsCount > 0 || universitiesCount > 0) {
-        throw {
-            status: 400,
-            message: 'Không thể xóa khu vực: Vẫn còn dữ liệu liên kết.'
-        };
+        throw new AppError('Không thể xóa khu vực: Vẫn còn dữ liệu liên kết.', 400);
     }
 
     await location.destroy();
@@ -128,10 +126,9 @@ const deleteLocation = async (id) => {
 const toggleLocationStatus = async (id, isActive) => {
     const { Location } = sequelize.models;
     const location = await Location.findByPk(id)
-    if (!location) throw { status: 404, message: 'Không tìm thấy khu vực' }
-
+    if (!location) throw new AppError('Không tìm thấy khu vực', 404);
     if (location.is_active === isActive) {
-        throw { status: 400, message: `Khu vực đã ở trạng thái ${isActive ? 'hoạt động' : 'vô hiệu hóa'}` }
+        throw new AppError(`Khu vực đã ở trạng thái ${isActive ? 'hoạt động' : 'vô hiệu hóa'}`, 400);
     }
 
     location.is_active = isActive

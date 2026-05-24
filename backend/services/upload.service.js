@@ -3,6 +3,7 @@ const Busboy = require('busboy');
 const { PutObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client, bucketName } = require('../config/s3');
 const { UPLOAD_CATEGORIES } = require('../constants/upload');
+const AppError = require('../utils/AppError');
 
 /**
  * MIME type to file extension mapping for image uploads.
@@ -25,17 +26,13 @@ const MIME_TO_EXT = {
 async function uploadFiles(req, categoryKey) {
   const config = UPLOAD_CATEGORIES[categoryKey];
   if (!config) {
-    const err = new Error(`Loại upload không xác định: ${categoryKey}`);
-    err.status = 400;
-    throw err;
+    throw new AppError('Loại tệp không hợp lệ', 400, 'INVALID_UPLOAD_TYPE');
   }
 
   const files = await parseMultipart(req, config);
 
   if (files.length === 0) {
-    const err = new Error('Không có file nào được gửi lên');
-    err.status = 400;
-    throw err;
+    throw new AppError('Không có file nào được gửi lên', 400, 'NO_FILE_UPLOADED');
   }
 
   const resourceType = config.resourceType || 'image';
@@ -76,9 +73,7 @@ function parseMultipart(req, config) {
     const fail = (msg) => {
       if (finished) return;
       finished = true;
-      const err = new Error(msg);
-      err.status = 400;
-      reject(err);
+      reject(new AppError(msg, 400, 'INVALID_UPLOAD_FILE'));
     };
 
     const busboy = Busboy({
@@ -94,7 +89,7 @@ function parseMultipart(req, config) {
 
       if (!config.mimePattern.test(mimeType)) {
         stream.resume(); // drain the stream
-        return fail(`Invalid file type: ${mimeType}`);
+        return fail('Định dạng file không được hỗ trợ');
       }
 
       const chunks = [];
@@ -107,7 +102,7 @@ function parseMultipart(req, config) {
 
       stream.on('limit', () => {
         const maxMB = (config.maxSize / (1024 * 1024)).toFixed(0);
-        fail(`File exceeds maximum size of ${maxMB}MB`);
+        fail(`File vượt quá dung lượng tối đa ${maxMB}MB`);
       });
 
       stream.on('end', () => {
@@ -118,7 +113,7 @@ function parseMultipart(req, config) {
     });
 
     busboy.on('filesLimit', () => {
-      fail(`Too many files. Maximum allowed: ${config.maxFiles}`);
+      fail(`Số lượng file vượt quá giới hạn ${config.maxFiles}`);
     });
 
     busboy.on('finish', () => {
@@ -176,9 +171,7 @@ async function uploadToS3(buffer, { folder, contentType, extension = '' }) {
 async function uploadBuffer(buffer, categoryKey, filename) {
   const config = UPLOAD_CATEGORIES[categoryKey];
   if (!config) {
-    const err = new Error(`Loại upload không xác định: ${categoryKey}`);
-    err.status = 400;
-    throw err;
+    throw new AppError('Loại tệp không hợp lệ', 400, 'INVALID_UPLOAD_TYPE');
   }
 
   const resourceType = config.resourceType || 'image';

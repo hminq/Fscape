@@ -9,6 +9,7 @@ const RoomType = require('../models/roomType.model');
 const CustomerProfile = require('../models/customerProfile.model');
 const Booking = require('../models/booking.model');
 const { ROLES } = require('../constants/roles');
+const AppError = require('../utils/AppError');
 const {
     CONTRACT_LENGTH,
     isValidContractLength,
@@ -127,7 +128,7 @@ const getAllContracts = async ({ page = 1, limit = 10, status, building_id, sear
 
     // BM: force scope to their building
     if (!isAdmin && !user.building_id) {
-        throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+        throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
     }
     const scopedBuildingId = isAdmin ? building_id : user.building_id;
 
@@ -182,16 +183,16 @@ const getContractById = async (id, user) => {
             { model: ContractTemplate, as: 'template' }
         ]
     });
-    if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+    if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
     if (user.role === ROLES.BUILDING_MANAGER) {
         if (!user.building_id) {
-            throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+            throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         }
         const contractBuildingId = contract.room?.building?.id;
         if (!contractBuildingId || contractBuildingId !== user.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền truy cập hợp đồng này (khác tòa nhà).' };
+            throw new AppError('Bạn không có quyền truy cập hợp đồng này (khác tòa nhà).', 403);
         }
         return stripTimestamps(contract);
     }
@@ -199,7 +200,7 @@ const getContractById = async (id, user) => {
     // RESIDENT / CUSTOMER: only own contracts
     if (user.role === ROLES.RESIDENT || user.role === ROLES.CUSTOMER) {
         if (contract.customer_id !== user.id) {
-            throw { status: 403, message: 'Bạn không có quyền truy cập hợp đồng này' };
+            throw new AppError('Bạn không có quyền truy cập hợp đồng này', 403);
         }
     }
 
@@ -219,13 +220,13 @@ const updateContract = async (id, data, user) => {
             include: [{ model: Building, as: 'building' }]
         }]
     });
-    if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+    if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
     if (user.role === ROLES.BUILDING_MANAGER) {
         const contractBuildingId = contract.room?.building?.id;
         if (!contractBuildingId || contractBuildingId !== user.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền chỉnh sửa hợp đồng này' };
+            throw new AppError('Bạn không có quyền chỉnh sửa hợp đồng này', 403);
         }
     }
 
@@ -335,9 +336,9 @@ const createContractFromBooking = async (bookingId) => {
             transaction
         });
 
-        if (!booking) throw { status: 404, message: 'Không tìm thấy đơn đặt phòng' };
+        if (!booking) throw new AppError('Không tìm thấy đơn đặt phòng', 404);
         if (booking.status !== 'DEPOSIT_PAID') {
-            throw { status: 400, message: 'Đơn đặt phòng chưa ở trạng thái đã đặt cọc' };
+            throw new AppError('Đơn đặt phòng chưa ở trạng thái đã đặt cọc', 400);
         }
 
         const room = booking.room;
@@ -349,21 +350,21 @@ const createContractFromBooking = async (bookingId) => {
             include: [{ model: CustomerProfile, as: 'profile' }],
             transaction
         });
-        if (!customer) throw { status: 404, message: 'Không tìm thấy khách hàng' };
+        if (!customer) throw new AppError('Không tìm thấy khách hàng', 404);
 
         // 3) Load building manager.
         const manager = await User.findOne({
             where: { building_id: building.id, role: ROLES.BUILDING_MANAGER, is_active: true },
             transaction
         });
-        if (!manager) throw { status: 400, message: 'Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này' };
+        if (!manager) throw new AppError('Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này', 400);
 
         // 4) Load default contract template.
         const template = await ContractTemplate.findOne({
             where: { is_default: true, is_active: true },
             transaction
         });
-        if (!template) throw { status: 400, message: 'Không tìm thấy mẫu hợp đồng mặc định đang hoạt động' };
+        if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng mặc định đang hoạt động', 400);
 
         // 5) Resolve dates and billing values.
         const durationMonths = Number(booking.duration_months);
@@ -494,19 +495,19 @@ const renewContract = async (contractId, body, user) => {
             }],
             transaction
         });
-        if (!oldContract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+        if (!oldContract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
         // 2. Only RESIDENT who owns the contract can renew
         if (user.role !== ROLES.RESIDENT) {
-            throw { status: 403, message: 'Chỉ cư dân (RESIDENT) mới có thể gia hạn hợp đồng' };
+            throw new AppError('Chỉ cư dân mới có thể gia hạn hợp đồng', 403);
         }
         if (oldContract.customer_id !== user.id) {
-            throw { status: 403, message: 'Bạn không có quyền gia hạn hợp đồng này' };
+            throw new AppError('Bạn không có quyền gia hạn hợp đồng này', 403);
         }
 
         // 3. Only ACTIVE or EXPIRING_SOON contracts can be renewed
         if (!['ACTIVE', 'EXPIRING_SOON'].includes(oldContract.status)) {
-            throw { status: 400, message: 'Chỉ có thể gia hạn hợp đồng đang ACTIVE hoặc EXPIRING_SOON' };
+            throw new AppError('Chỉ có thể gia hạn hợp đồng đang hoạt động hoặc sắp hết hạn', 400);
         }
 
         // 4. Prevent duplicate pending renewals (only block if one is actively being signed)
@@ -518,19 +519,19 @@ const renewContract = async (contractId, body, user) => {
             transaction
         });
         if (existingRenewal) {
-            throw { status: 400, message: 'Hợp đồng này đã có yêu cầu gia hạn đang chờ xử lý' };
+            throw new AppError('Hợp đồng này đã có yêu cầu gia hạn đang chờ xử lý', 400);
         }
 
         // 5. Validate duration_months
         const { duration_months, billing_cycle, notes, start_date } = body;
         if (!duration_months || !isValidContractLength(duration_months)) {
-            throw { status: 400, message: 'duration_months phải là 6 hoặc 12' };
+            throw new AppError('Thời hạn hợp đồng phải là 6 hoặc 12 tháng', 400);
         }
 
         // 6. Validate billing_cycle if provided
         const resolvedBillingCycle = billing_cycle || oldContract.billing_cycle;
         if (billing_cycle && !isValidBookingBillingCycle(billing_cycle)) {
-            throw { status: 400, message: 'billing_cycle không hợp lệ (CYCLE_1M, CYCLE_3M, CYCLE_6M, ALL_IN)' };
+            throw new AppError('Chu kỳ thanh toán không hợp lệ', 400);
         }
 
         // 7. Validate start_date: must be within [old.end_date, old.end_date + RENEWAL_MAX_GAP_DAYS]
@@ -542,10 +543,7 @@ const renewContract = async (contractId, body, user) => {
         if (start_date) {
             const requested = parseUTCDate(start_date);
             if (requested < oldEndDate || requested > maxStartDate) {
-                throw {
-                    status: 400,
-                    message: `Ngày bắt đầu phải từ ${oldContract.end_date} đến ${maxStartDate.toISOString().split('T')[0]}`
-                };
+                throw new AppError(`Ngày bắt đầu phải từ ${oldContract.end_date} đến ${maxStartDate.toISOString().split('T')[0]}`, 400);
             }
             startDate = start_date;
         }
@@ -559,21 +557,21 @@ const renewContract = async (contractId, body, user) => {
             include: [{ model: CustomerProfile, as: 'profile' }],
             transaction
         });
-        if (!customer) throw { status: 404, message: 'Không tìm thấy khách hàng' };
+        if (!customer) throw new AppError('Không tìm thấy khách hàng', 404);
 
         // 9. Fetch building manager
         const manager = await User.findOne({
             where: { building_id: building.id, role: ROLES.BUILDING_MANAGER, is_active: true },
             transaction
         });
-        if (!manager) throw { status: 400, message: 'Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này' };
+        if (!manager) throw new AppError('Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này', 400);
 
         // 10. Fetch default contract template
         const template = await ContractTemplate.findOne({
             where: { is_default: true, is_active: true },
             transaction
         });
-        if (!template) throw { status: 400, message: 'Không tìm thấy mẫu hợp đồng mặc định đang hoạt động' };
+        if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng mặc định đang hoạt động', 400);
 
         // 11. Calculate dates
         const durationMonths = Number(duration_months);
@@ -691,18 +689,18 @@ const customerSign = async (contractId, signatureUrl, user, req) => {
             include: [{ model: Building, as: 'building' }]
         }]
     });
-    if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+    if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     if (contract.status !== 'PENDING_CUSTOMER_SIGNATURE') {
-        throw { status: 400, message: 'Hợp đồng không ở trạng thái chờ khách hàng ký' };
+        throw new AppError('Hợp đồng không ở trạng thái chờ khách hàng ký', 400);
     }
 
     if (contract.signature_expires_at && new Date() > new Date(contract.signature_expires_at)) {
-        throw { status: 400, message: 'Thời hạn ký đã hết' };
+        throw new AppError('Thời hạn ký đã hết', 400);
     }
 
     if (contract.customer_id !== user.id) {
-        throw { status: 403, message: 'Bạn không có quyền ký hợp đồng này' };
+        throw new AppError('Bạn không có quyền ký hợp đồng này', 403);
     }
 
     const oldStatus = contract.status;
@@ -781,20 +779,20 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
             }],
             transaction
         });
-        if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+        if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
         if (contract.status !== 'PENDING_MANAGER_SIGNATURE') {
-            throw { status: 400, message: 'Hợp đồng không ở trạng thái chờ quản lý ký' };
+            throw new AppError('Hợp đồng không ở trạng thái chờ quản lý ký', 400);
         }
 
         if (contract.signature_expires_at && new Date() > new Date(contract.signature_expires_at)) {
-            throw { status: 400, message: 'Thời hạn ký đã hết' };
+            throw new AppError('Thời hạn ký đã hết', 400);
         }
 
         // BM scope check
         const contractBuildingId = contract.room?.building?.id;
         if (!contractBuildingId || contractBuildingId !== user.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền ký hợp đồng này' };
+            throw new AppError('Bạn không có quyền ký hợp đồng này', 403);
         }
 
         const oldStatus = contract.status;
@@ -965,7 +963,7 @@ const getContractStats = async (user) => {
 
     if (user?.role === ROLES.BUILDING_MANAGER) {
         if (!user.building_id) {
-            throw { status: 403, message: 'Building Manager chưa được gán tòa nhà.' };
+            throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         }
         include[0].include[0].where = { id: user.building_id };
         include[0].include[0].required = true;
@@ -1025,25 +1023,25 @@ const sendManualReminder = async (contractId, reminderType, user) => {
             }
         ]
     });
-    if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+    if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
     if (user.role === ROLES.BUILDING_MANAGER) {
         const buildingId = contract.room?.building?.id;
         if (!buildingId || buildingId !== user.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền thao tác trên hợp đồng này' };
+            throw new AppError('Bạn không có quyền thao tác trên hợp đồng này', 403);
         }
     }
 
     // Validate status matches reminder type
     const expectedStatus = REMINDER_STATUS_MAP[reminderType];
     if (contract.status !== expectedStatus) {
-        throw { status: 400, message: `Không thể gửi nhắc nhở ${REMINDER_LABEL[reminderType]} khi hợp đồng đang ở trạng thái hiện tại` };
+        throw new AppError(`Không thể gửi nhắc nhở ${REMINDER_LABEL[reminderType]} khi hợp đồng đang ở trạng thái hiện tại`, 400);
     }
 
     const customer = contract.customer;
     if (!customer?.email) {
-        throw { status: 400, message: 'Khách hàng không có email' };
+        throw new AppError('Khách hàng không có email', 400);
     }
 
     const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
@@ -1065,7 +1063,7 @@ const sendManualReminder = async (contractId, reminderType, user) => {
                 where: { contract_id: contractId, invoice_type: INVOICE_TYPE.RENT, status: 'UNPAID' },
                 order: [['createdAt', 'ASC']],
             });
-            if (!invoice) throw { status: 400, message: 'Không tìm thấy hóa đơn chưa thanh toán' };
+            if (!invoice) throw new AppError('Không tìm thấy hóa đơn chưa thanh toán', 400);
             await sendInvoiceCreatedEmail(customer.email, {
                 customerName,
                 invoiceNumber: invoice.invoice_number,
@@ -1129,17 +1127,17 @@ const terminateContract = async (contractId, body, user, req) => {
             }
         ]
     });
-    if (!contract) throw { status: 404, message: 'Không tìm thấy hợp đồng' };
+    if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     if (['TERMINATED', 'FINISHED'].includes(contract.status)) {
-        throw { status: 400, message: 'Hợp đồng đã kết thúc hoặc đã bị chấm dứt' };
+        throw new AppError('Hợp đồng đã kết thúc hoặc đã bị chấm dứt', 400);
     }
 
     // BM scope check
     const contractBuildingId = contract.room?.building?.id;
     if (user.role === ROLES.BUILDING_MANAGER) {
         if (!contractBuildingId || contractBuildingId !== user.building_id) {
-            throw { status: 403, message: 'Bạn không có quyền thao tác trên hợp đồng này' };
+            throw new AppError('Bạn không có quyền thao tác trên hợp đồng này', 403);
         }
     }
 
@@ -1147,22 +1145,22 @@ const terminateContract = async (contractId, body, user, req) => {
     const isActive = ACTIVE_STATUSES.includes(contract.status);
 
     if (!isPending && !isActive) {
-        throw { status: 400, message: `Không thể chấm dứt hợp đồng ở trạng thái ${contract.status}` };
+        throw new AppError(`Không thể chấm dứt hợp đồng ở trạng thái ${contract.status}`, 400);
     }
 
     // Active contracts require assigned_staff_id
     if (isActive && !assigned_staff_id) {
-        throw { status: 400, message: 'Hợp đồng đang hoạt động - cần chỉ định nhân viên (assigned_staff_id) để thực hiện checkout' };
+        throw new AppError('Cần chỉ định nhân viên để thực hiện trả phòng cho hợp đồng đang hoạt động', 400);
     }
 
     // Validate staff if provided
     let staff = null;
     if (assigned_staff_id) {
         staff = await User.findByPk(assigned_staff_id);
-        if (!staff) throw { status: 400, message: 'Không tìm thấy nhân viên' };
-        if (staff.role !== ROLES.STAFF) throw { status: 400, message: 'Người dùng được chỉ định không phải nhân viên (STAFF)' };
+        if (!staff) throw new AppError('Không tìm thấy nhân viên', 400);
+        if (staff.role !== ROLES.STAFF) throw new AppError('Người dùng được chỉ định không phải nhân viên', 400);
         if (staff.building_id !== contractBuildingId) {
-            throw { status: 400, message: 'Nhân viên không thuộc cùng tòa nhà với hợp đồng' };
+            throw new AppError('Nhân viên không thuộc cùng tòa nhà với hợp đồng', 400);
         }
     }
 
