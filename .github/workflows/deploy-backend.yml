@@ -72,4 +72,5 @@ jobs:
               docker logs --tail=120 fscape-worker || true
               exit 1
             }
+            docker compose -f docker-compose.prod.yml restart nginx
             docker image prune -f
