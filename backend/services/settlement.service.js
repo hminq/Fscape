@@ -1,16 +1,8 @@
 const { sequelize } = require('../config/db');
 const { Op } = require('sequelize');
-const Settlement = require('../models/settlement.model');
-const SettlementItem = require('../models/settlementItem.model');
-const Contract = require('../models/contract.model');
-const User = require('../models/user.model');
-const Room = require('../models/room.model');
-const Building = require('../models/building.model');
-const Request = require('../models/request.model');
-const RequestStatusHistory = require('../models/requestStatusHistory.model');
+const settlementRepository = require('../repositories/settlement.repository');
 const auditService = require('./audit.service');
 const { SETTLEMENT_STATUS, SETTLEMENT_ITEM_TYPE, EARLY_CHECKOUT_DEPOSIT_PENALTY_RATE } = require('../constants/settlementEnums');
-const { REQUEST_SERVICE_BILLING_STATUS } = require('../constants/invoiceEnums');
 const { billingCycleToMonths, isAllInBillingCycle } = require('../utils/billingCycle.util');
 const { ROLES } = require('../constants/roles');
 
@@ -34,25 +26,6 @@ const getScopedSettlementQuery = (user, baseWhere = {}) => {
     return { where: baseWhere, scopedBuildingId: user.building_id };
 };
 
-const buildContractInclude = ({ scopedBuildingId, required = false } = {}) => ({
-    model: Contract,
-    as: 'contract',
-    attributes: ['id', 'contract_number', 'room_id'],
-    required,
-    include: [{
-        model: Room,
-        as: 'room',
-        attributes: ['id', 'room_number'],
-        ...(scopedBuildingId ? { required: true } : {}),
-        include: [{
-            model: Building,
-            as: 'building',
-            attributes: ['id', 'name'],
-            ...(scopedBuildingId ? { where: { id: scopedBuildingId }, required: true } : {})
-        }]
-    }]
-});
-
 /**
  * Create a settlement record during checkout.
  *
@@ -64,15 +37,10 @@ const buildContractInclude = ({ scopedBuildingId, required = false } = {}) => ({
  */
 const createCheckoutSettlement = async (contract, penaltyData, user, transaction) => {
     // Query unbilled service requests.
-    const unbilledRequests = await Request.findAll({
-        where: {
-            room_id: contract.room_id,
-            status: { [Op.in]: ['COMPLETED', 'DONE'] },
-            service_billing_status: REQUEST_SERVICE_BILLING_STATUS.UNBILLED,
-            request_price: { [Op.gt]: 0 }
-        },
-        transaction
-    });
+    const unbilledRequests = await settlementRepository.findUnbilledServiceRequestsForRoom(
+        contract.room_id,
+        { transaction }
+    );
 
     const totalUnbilledService = unbilledRequests.reduce(
         (sum, req) => sum + Number(req.request_price || 0), 0
@@ -105,7 +73,7 @@ const createCheckoutSettlement = async (contract, penaltyData, user, transaction
     const amountDue = Math.max(0, totalDeductions - depositBefore);
 
     // Create settlement record.
-    const settlement = await Settlement.create({
+    const settlement = await settlementRepository.createSettlement({
         contract_id: contract.id,
         resident_id: contract.customer_id,
         status: SETTLEMENT_STATUS.FINALIZED,
@@ -207,19 +175,13 @@ const createCheckoutSettlement = async (contract, penaltyData, user, transaction
 
     let createdItems = [];
     if (items.length > 0) {
-        createdItems = await SettlementItem.bulkCreate(items, { transaction });
+        createdItems = await settlementRepository.bulkCreateSettlementItems(items, { transaction });
     }
 
     // Mark unbilled requests as SETTLED.
     if (unbilledRequests.length > 0) {
         const requestIds = unbilledRequests.map(r => r.id);
-        await Request.update(
-            {
-                service_billing_status: REQUEST_SERVICE_BILLING_STATUS.SETTLED,
-                service_billed_at: new Date()
-            },
-            { where: { id: { [Op.in]: requestIds } }, transaction }
-        );
+        await settlementRepository.markRequestsSettled(requestIds, { transaction });
     }
 
     const result = settlement.toJSON();
@@ -231,7 +193,6 @@ const createCheckoutSettlement = async (contract, penaltyData, user, transaction
  * List all settlements with pagination, status filter, search, and BM scoping.
  */
 const getAllSettlements = async ({ page = 1, limit = 10, status, search } = {}, user) => {
-    const offset = (page - 1) * limit;
     const baseWhere = {};
 
     if (status) {
@@ -240,26 +201,12 @@ const getAllSettlements = async ({ page = 1, limit = 10, status, search } = {}, 
     }
 
     const { where, scopedBuildingId } = getScopedSettlementQuery(user, baseWhere);
-    const contractInclude = buildContractInclude({ scopedBuildingId, required: Boolean(scopedBuildingId) });
-
-    if (search) {
-        contractInclude.where = { contract_number: { [Op.iLike]: `%${search}%` } };
-        contractInclude.required = true;
-    }
-
-    const { count, rows } = await Settlement.findAndCountAll({
+    const { count, rows } = await settlementRepository.findAndCountSettlements({
+        page,
+        limit,
         where,
-        include: [
-            contractInclude,
-            { model: User, as: 'resident', attributes: ['id', 'first_name', 'last_name', 'email'] },
-            { model: User, as: 'creator', attributes: ['id', 'first_name', 'last_name'] },
-            { model: SettlementItem, as: 'items', attributes: ['id'] }
-        ],
-        order: [['finalized_at', 'DESC']],
-        limit: Number(limit),
-        offset: Number(offset),
-        distinct: true,
-        subQuery: false
+        scopedBuildingId,
+        search
     });
 
     return {
@@ -277,14 +224,9 @@ const getAllSettlements = async ({ page = 1, limit = 10, status, search } = {}, 
 const getSettlement = async (settlementId, user) => {
     const { where, scopedBuildingId } = getScopedSettlementQuery(user, { id: settlementId });
 
-    const settlement = await Settlement.findOne({
+    const settlement = await settlementRepository.findSettlement({
         where,
-        include: [
-            { model: SettlementItem, as: 'items' },
-            buildContractInclude({ scopedBuildingId, required: Boolean(scopedBuildingId) }),
-            { model: User, as: 'resident', attributes: ['id', 'email', 'first_name', 'last_name'] },
-            { model: User, as: 'creator', attributes: ['id', 'email', 'first_name', 'last_name'] }
-        ]
+        scopedBuildingId
     });
 
     if (!settlement) {
@@ -300,14 +242,9 @@ const getSettlement = async (settlementId, user) => {
 const getSettlementByContract = async (contract_id, user) => {
     const { where, scopedBuildingId } = getScopedSettlementQuery(user, { contract_id });
 
-    const settlement = await Settlement.findOne({
+    const settlement = await settlementRepository.findSettlement({
         where,
-        include: [
-            { model: SettlementItem, as: 'items' },
-            buildContractInclude({ scopedBuildingId, required: Boolean(scopedBuildingId) }),
-            { model: User, as: 'resident', attributes: ['id', 'email', 'first_name', 'last_name'] },
-            { model: User, as: 'creator', attributes: ['id', 'email', 'first_name', 'last_name'] }
-        ]
+        scopedBuildingId
     });
 
     if (!settlement) {
@@ -334,30 +271,27 @@ const closeSettlement = async (settlementId, user) => {
     const transaction = await sequelize.transaction();
 
     try {
-        await settlement.update({
+        await settlementRepository.updateSettlement(settlement, {
             status: SETTLEMENT_STATUS.CLOSED,
             closed_at: new Date()
         }, { transaction });
 
-        const checkoutRequest = await Request.findOne({
-            where: {
-                room_id: settlement.contract?.room?.id || settlement.contract?.room_id,
-                resident_id: settlement.resident_id,
-                request_type: 'CHECKOUT',
-                status: 'IN_PROGRESS'
+        const checkoutRequest = await settlementRepository.findInProgressCheckoutRequest(
+            {
+                roomId: settlement.contract?.room?.id || settlement.contract?.room_id,
+                residentId: settlement.resident_id
             },
-            order: [['created_at', 'DESC']],
-            transaction
-        });
+            { transaction }
+        );
 
         if (checkoutRequest) {
-            await checkoutRequest.update({
+            await settlementRepository.updateRequest(checkoutRequest, {
                 status: 'DONE',
                 completed_at: new Date(),
                 completion_note: checkoutRequest.completion_note || 'Đã đóng quyết toán checkout'
             }, { transaction });
 
-            await RequestStatusHistory.create({
+            await settlementRepository.createRequestStatusHistory({
                 request_id: checkoutRequest.id,
                 from_status: 'IN_PROGRESS',
                 to_status: 'DONE',

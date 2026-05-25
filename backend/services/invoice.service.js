@@ -1,27 +1,19 @@
 const { sequelize } = require('../config/db');
-const { Op } = require('sequelize');
 const moment = require('moment');
 const { generateNumberedId } = require('../utils/generateId');
 const { billingCycleToMonths } = require('../utils/billingCycle.util');
 const { parseUTCDate, todayUTC } = require('../utils/date.util');
 const { createNotification } = require('./notification.service');
 const { INVOICE_PAYMENT_DEADLINE_DAYS } = require('../constants/jobTimeRules');
+const invoiceRepository = require('../repositories/invoice.repository');
 
 const AppError = require('../utils/AppError');
 // Rent invoice generation by billing cycle.
 
 const generateRentInvoices = async () => {
-    const { Contract, Invoice, InvoiceItem, Room } = sequelize.models;
-
     const today = moment().format('YYYY-MM-DD');
 
-    const dueContracts = await Contract.findAll({
-        where: {
-            status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON'] },
-            next_billing_date: { [Op.lte]: today }
-        },
-        include: [{ model: Room, as: 'room' }]
-    });
+    const dueContracts = await invoiceRepository.findContractsDueForRentBilling(today);
 
     console.log(`[RentInvoiceJob] Found ${dueContracts.length} contract(s) due for rent billing.`);
     let generatedCount = 0;
@@ -45,7 +37,7 @@ const generateRentInvoices = async () => {
 
             const dueDate = moment(billingPeriodStart).add(INVOICE_PAYMENT_DEADLINE_DAYS, 'days').format('YYYY-MM-DD');
 
-            const newInvoice = await Invoice.create({
+            const newInvoice = await invoiceRepository.createInvoice({
                 invoice_number: generateNumberedId('INV'),
                 invoice_type: 'RENT',
                 contract_id: contract.id,
@@ -59,7 +51,7 @@ const generateRentInvoices = async () => {
                 due_date: dueDate
             }, { transaction });
 
-            await InvoiceItem.create({
+            await invoiceRepository.createInvoiceItem({
                 invoice_id: newInvoice.id,
                 item_type: 'RENT',
                 description: `Tiền thuê phòng từ ${billingPeriodStart} đến ${billingPeriodEnd}`,
@@ -68,7 +60,7 @@ const generateRentInvoices = async () => {
                 amount: roomRent
             }, { transaction });
 
-            await contract.update({
+            await invoiceRepository.updateContract(contract, {
                 next_billing_date: nextBillingDate,
                 last_billed_date: billingPeriodStart
             }, { transaction });
@@ -103,18 +95,10 @@ const generateRentInvoices = async () => {
 // Service invoice generation (every 30 days).
 
 const generateServiceInvoices = async () => {
-    const { Contract, Invoice, InvoiceItem, Request, Room } = sequelize.models;
-
     const today = todayUTC();
     const todayDate = parseUTCDate(today);
 
-    const dueContracts = await Contract.findAll({
-        where: {
-            status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON'] },
-            next_service_billing_at: { [Op.lte]: todayDate }
-        },
-        include: [{ model: Room, as: 'room' }]
-    });
+    const dueContracts = await invoiceRepository.findContractsDueForServiceBilling(todayDate);
 
     console.log(`[ServiceInvoiceJob] Found ${dueContracts.length} contract(s) due for service billing.`);
     let generatedCount = 0;
@@ -123,15 +107,10 @@ const generateServiceInvoices = async () => {
         const transaction = await sequelize.transaction();
         try {
             // Find unbilled completed requests
-            const completedRequests = await Request.findAll({
-                where: {
-                    room_id: contract.room_id,
-                    status: { [Op.in]: ['COMPLETED', 'DONE'] },
-                    service_billing_status: 'UNBILLED',
-                    request_price: { [Op.gt]: 0 }
-                },
-                transaction
-            });
+            const completedRequests = await invoiceRepository.findUnbilledCompletedRequests(
+                contract.room_id,
+                { transaction }
+            );
 
             // Service billing is now day-based: once the billing date is reached,
             // the contract is due for the whole day.
@@ -141,7 +120,7 @@ const generateServiceInvoices = async () => {
             const nextServiceBillingAt = parseUTCDate(
                 moment(currentBillingDate).add(30, 'days').format('YYYY-MM-DD')
             );
-            await contract.update({ next_service_billing_at: nextServiceBillingAt }, { transaction });
+            await invoiceRepository.updateContract(contract, { next_service_billing_at: nextServiceBillingAt }, { transaction });
 
             // Skip invoice creation if no unbilled requests
             if (completedRequests.length === 0) {
@@ -157,7 +136,7 @@ const generateServiceInvoices = async () => {
             const billingPeriodStart = moment(today).subtract(30, 'days').format('YYYY-MM-DD');
             const dueDate = moment(today).add(INVOICE_PAYMENT_DEADLINE_DAYS, 'days').format('YYYY-MM-DD');
 
-            const newInvoice = await Invoice.create({
+            const newInvoice = await invoiceRepository.createInvoice({
                 invoice_number: generateNumberedId('INV-SVC'),
                 invoice_type: 'SERVICE',
                 contract_id: contract.id,
@@ -172,7 +151,7 @@ const generateServiceInvoices = async () => {
             }, { transaction });
 
             for (const req of completedRequests) {
-                await InvoiceItem.create({
+                await invoiceRepository.createInvoiceItem({
                     invoice_id: newInvoice.id,
                     reference_type: 'REQUEST',
                     reference_id: req.id,
@@ -186,14 +165,7 @@ const generateServiceInvoices = async () => {
 
             // Mark requests as INVOICED
             const requestIds = completedRequests.map(r => r.id);
-            await Request.update(
-                {
-                    service_billing_status: 'INVOICED',
-                    service_billed_at: new Date(),
-                    service_billed_invoice_id: newInvoice.id
-                },
-                { where: { id: { [Op.in]: requestIds } }, transaction }
-            );
+            await invoiceRepository.markRequestsInvoiced(requestIds, newInvoice.id, { transaction });
 
             await transaction.commit();
 
@@ -235,68 +207,28 @@ const generatePeriodicInvoices = async () => {
 const { ROLES } = require('../constants/roles');
 
 const getAllInvoices = async (caller, { page = 1, limit = 10, status, invoice_type, building_id, search } = {}) => {
-    const { Invoice, Contract, Room, Building, User } = sequelize.models;
-
-    const where = {};
-    const contractWhere = {};
-    const roomInclude = {
-        model: Room, as: 'room', attributes: ['id', 'room_number', 'floor', 'building_id'],
-        include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }],
-    };
-
-    if (status) {
-        const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
-        where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
-    }
-    if (invoice_type) where.invoice_type = invoice_type;
-    if (search) where.invoice_number = { [Op.iLike]: `%${search}%` };
-
+    let scopedBuildingId;
     if (caller.role === ROLES.BUILDING_MANAGER) {
         if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
-        roomInclude.where = { building_id: caller.building_id };
-        roomInclude.required = true;
-    } else if (building_id) {
-        roomInclude.where = { building_id };
-        roomInclude.required = true;
+        scopedBuildingId = caller.building_id;
     }
 
-    const { count, rows } = await Invoice.findAndCountAll({
-        where,
-        include: [
-            {
-                model: Contract, as: 'contract', attributes: ['id', 'contract_number', 'customer_id'],
-                where: Object.keys(contractWhere).length ? contractWhere : undefined,
-                include: [
-                    { model: User, as: 'customer', attributes: ['id', 'first_name', 'last_name', 'email'] },
-                    roomInclude,
-                ],
-            },
-        ],
-        limit: Number(limit),
-        offset: (page - 1) * Number(limit),
-        order: [['created_at', 'DESC']],
-    });
+    const { count, rows } = await invoiceRepository.findAndCountInvoices(
+        { page, limit, status, invoice_type, building_id, search },
+        scopedBuildingId
+    );
 
     return { total: count, page: Number(page), limit: Number(limit), totalPages: Math.ceil(count / limit), data: rows };
 };
 
 const getInvoiceStats = async (caller) => {
-    const { Invoice, Contract, Room } = sequelize.models;
-
-    const include = [];
+    let scopedBuildingId;
     if (caller.role === ROLES.BUILDING_MANAGER) {
         if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
-        include.push({
-            model: Contract, as: 'contract', attributes: [],
-            include: [{
-                model: Room, as: 'room', attributes: [],
-                where: { building_id: caller.building_id }, required: true,
-            }],
-            required: true,
-        });
+        scopedBuildingId = caller.building_id;
     }
 
-    const rows = await Invoice.findAll({ attributes: ['status', 'invoice_type'], include, raw: true });
+    const rows = await invoiceRepository.findInvoicesForStats(scopedBuildingId);
 
     const byStatus = {};
     const byType = {};
@@ -311,64 +243,12 @@ const getInvoiceStats = async (caller) => {
 };
 
 const getMyInvoices = async (userId, query = {}) => {
-    const { Invoice, Contract, Room, Building } = sequelize.models;
-
     const {
         page = 1,
         limit = 10,
-        sort_by = 'created_at',
-        sort_order = 'DESC',
-        status,
-        invoice_type,
-        search,
     } = query;
 
-    const offset = (page - 1) * limit;
-    const where = {};
-
-    // Status filter
-    if (status === 'unpaid') {
-        where.status = { [Op.in]: ['UNPAID', 'OVERDUE'] };
-    } else if (status && status !== 'all') {
-        where.status = status;
-    }
-
-    // Type filter
-    if (invoice_type && invoice_type !== 'all') {
-        where.invoice_type = invoice_type;
-    }
-
-    // Search by invoice_number
-    if (search) {
-        where.invoice_number = { [Op.iLike]: `%${search}%` };
-    }
-
-    // Allowed sort columns
-    const allowedSorts = ['created_at', 'due_date', 'total_amount', 'status'];
-    const sortCol = allowedSorts.includes(sort_by) ? sort_by : 'created_at';
-    const sortDir = sort_order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-    const { count, rows } = await Invoice.findAndCountAll({
-        where,
-        include: [
-            {
-                model: Contract,
-                as: 'contract',
-                where: { customer_id: userId },
-                include: [
-                    {
-                        model: Room,
-                        as: 'room',
-                        include: [{ model: Building, as: 'building' }]
-                    }
-                ]
-            }
-        ],
-        distinct: true,
-        limit: Number(limit),
-        offset: Number(offset),
-        order: [[sortCol, sortDir]],
-    });
+    const { count, rows } = await invoiceRepository.findAndCountMyInvoices(userId, query);
 
     return {
         total: count,
@@ -380,27 +260,7 @@ const getMyInvoices = async (userId, query = {}) => {
 };
 
 const getInvoiceById = async (caller, invoiceId) => {
-    const { Invoice, Contract, InvoiceItem, Room, Building, User } = sequelize.models;
-
-    const contractInclude = {
-        model: Contract, as: 'contract',
-        include: [
-            { model: User, as: 'customer', attributes: ['id', 'first_name', 'last_name', 'email', 'phone', 'avatar_url'] },
-            {
-                model: Room, as: 'room',
-                include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }],
-            },
-        ],
-    };
-
-    if (caller.role === ROLES.RESIDENT || caller.role === ROLES.CUSTOMER) {
-        contractInclude.where = { customer_id: caller.id };
-    }
-
-    const invoice = await Invoice.findOne({
-        where: { id: invoiceId },
-        include: [contractInclude, { model: InvoiceItem, as: 'items' }],
-    });
+    const invoice = await invoiceRepository.findInvoiceByIdForCaller(invoiceId, caller);
 
     if (!invoice) {
         throw new AppError('Không tìm thấy hóa đơn', 404);

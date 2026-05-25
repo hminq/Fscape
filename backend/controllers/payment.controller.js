@@ -1,29 +1,10 @@
-const { sequelize } = require("../config/db");
 const paymentService = require("../services/payment.service");
 const { getRuntimeConfig } = require("../config/runtimeConfig");
 const asyncHandler = require('../utils/asyncHandler');
 
 const getMyPayments = asyncHandler(async (req, res) => {
-    const { Payment, Booking, Room, Building } = sequelize.models;
     const userId = req.user.id;
-
-    const payments = await Payment.findAll({
-        where: { user_id: userId },
-        include: [
-            {
-                model: Booking,
-                as: 'booking',
-                include: [
-                    {
-                        model: Room,
-                        as: 'room',
-                        include: [{ model: Building, as: 'building' }]
-                    }
-                ]
-            }
-        ],
-        order: [['created_at', 'DESC']]
-    });
+    const payments = await paymentService.getMyPayments(userId);
 
     return res.status(200).json({
         data: payments

@@ -1,13 +1,6 @@
-const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
-const Request = require('../models/request.model');
-const RequestImage = require('../models/requestImage.model');
-const RequestStatusHistory = require('../models/requestStatusHistory.model');
 const notificationService = require('./notification.service');
-const Room = require('../models/room.model');
-const User = require('../models/user.model');
-const Asset = require('../models/asset.model');
-const Building = require('../models/building.model');
+const requestRepository = require('../repositories/request.repository');
 const { ROLES } = require('../constants/roles');
 const { createNotification } = require('./notification.service');
 
@@ -106,15 +99,7 @@ const validateTransition = (fromStatus, toStatus, callerRole, body) => {
 };
 
 const getRequestAccessPayload = async (id) => {
-    return Request.findByPk(id, {
-        include: [
-            {
-                model: Room,
-                as: 'room',
-                attributes: ['id', 'room_number', 'floor', 'building_id'],
-            },
-        ],
-    });
+    return requestRepository.findRequestAccessPayload(id);
 };
 
 const assertRequestAccess = (request, actor) => {
@@ -151,75 +136,28 @@ const generateRequestNumber = async () => {
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
     // Count requests created today.
-    const count = await Request.count({
-        where: {
-            request_number: { [Op.like]: `REQ-${dateStr}-%` }
-        }
-    });
+    const count = await requestRepository.countRequestsByNumberPrefix(`REQ-${dateStr}-`);
 
     const nextId = String(count + 1).padStart(3, '0');
     return `REQ-${dateStr}-${nextId}`;
 };
 
 const getAllRequests = async (caller, { page = 1, limit = 10, status, request_type, room_id, assigned_staff_id, search } = {}) => {
-    const offset = (page - 1) * limit;
-    const where = {};
-    const roomInclude = {
-        model: Room,
-        as: 'room',
-        attributes: ['id', 'room_number', 'floor', 'building_id']
-    };
-
-    if (status) {
-        const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
-        where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
-    }
-    if (request_type) where.request_type = request_type;
-    if (room_id) where.room_id = room_id;
-    if (assigned_staff_id) where.assigned_staff_id = assigned_staff_id;
-
-    // Search by title or request_number
-    if (search) {
-        where[Op.or] = [
-            { title: { [Op.iLike]: `%${search}%` } },
-            { request_number: { [Op.iLike]: `%${search}%` } },
-            sequelize.where(sequelize.col('room.room_number'), { [Op.iLike]: `%${search}%` }),
-            sequelize.where(sequelize.col('resident.first_name'), { [Op.iLike]: `%${search}%` }),
-            sequelize.where(sequelize.col('resident.last_name'), { [Op.iLike]: `%${search}%` }),
-            sequelize.where(
-                sequelize.fn(
-                    'concat',
-                    sequelize.col('resident.last_name'),
-                    ' ',
-                    sequelize.col('resident.first_name')
-                ),
-                { [Op.iLike]: `%${search}%` }
-            ),
-        ];
-    }
-
+    const scope = {};
     if (caller.role === ROLES.BUILDING_MANAGER) {
         if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
-        roomInclude.where = { building_id: caller.building_id };
-        roomInclude.required = true;
+        scope.buildingId = caller.building_id;
     } else if (caller.role === ROLES.STAFF) {
-        where.assigned_staff_id = caller.id;
+        scope.staffId = caller.id;
     } else if (caller.role === ROLES.RESIDENT) {
-        where.resident_id = caller.id;
+        scope.residentId = caller.id;
     }
     // ADMIN sees all - no extra filter
 
-    const { count, rows } = await Request.findAndCountAll({
-        where,
-        include: [
-            roomInclude,
-            { model: User, as: 'resident', attributes: ['id', 'first_name', 'last_name', 'email'] },
-            { model: User, as: 'staff', attributes: ['id', 'first_name', 'last_name'] }
-        ],
-        limit: Number(limit),
-        offset: Number(offset),
-        order: [['createdAt', 'DESC']]
-    });
+    const { count, rows } = await requestRepository.findAndCountRequests(
+        { page, limit, status, request_type, room_id, assigned_staff_id, search },
+        scope
+    );
 
     return {
         total: count,
@@ -231,29 +169,10 @@ const getAllRequests = async (caller, { page = 1, limit = 10, status, request_ty
 };
 
 const getMyRequests = async (userId, { page = 1, limit = 10, status, request_type } = {}) => {
-    const offset = (page - 1) * limit;
-    const where = { resident_id: userId };
-    if (status) {
-        const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
-        where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
-    }
-    if (request_type) where.request_type = request_type;
-
-    const { count, rows } = await Request.findAndCountAll({
-        where,
-        include: [
-            {
-                model: Room, as: 'room',
-                attributes: ['id', 'room_number', 'floor', 'building_id'],
-                include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }]
-            },
-            { model: User, as: 'staff', attributes: ['id', 'first_name', 'last_name'] },
-            { model: RequestImage, as: 'images' }
-        ],
-        limit: Number(limit),
-        offset: Number(offset),
-        order: [['createdAt', 'DESC']]
-    });
+    const { count, rows } = await requestRepository.findAndCountMyRequests(
+        userId,
+        { page, limit, status, request_type }
+    );
 
     return {
         total: count,
@@ -265,25 +184,7 @@ const getMyRequests = async (userId, { page = 1, limit = 10, status, request_typ
 };
 
 const getRequestById = async (caller, id) => {
-    const request = await Request.findByPk(id, {
-        include: [
-            {
-                model: Room, as: 'room',
-                attributes: ['id', 'room_number', 'floor', 'building_id'],
-                include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }],
-            },
-            { model: User, as: 'resident', attributes: ['id', 'first_name', 'last_name', 'phone', 'email'] },
-            { model: User, as: 'staff', attributes: ['id', 'first_name', 'last_name', 'phone'] },
-            { model: Asset, as: 'asset', attributes: ['id', 'qr_code'] },
-            { model: RequestImage, as: 'images' },
-            {
-                model: RequestStatusHistory,
-                as: 'status_history',
-                include: [{ model: User, as: 'modifier', attributes: ['id', 'first_name', 'last_name', 'role'] }],
-            }
-        ],
-        order: [[{ model: RequestStatusHistory, as: 'status_history' }, 'created_at', 'DESC']]
-    });
+    const request = await requestRepository.findRequestDetailById(id);
 
     if (!request) throw new AppError('Không tìm thấy yêu cầu', 404);
 
@@ -310,13 +211,13 @@ const createRequest = async (data) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const room = await Room.findByPk(requestData.room_id, { transaction });
+        const room = await requestRepository.findRoomById(requestData.room_id, { transaction });
         if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
         requestData.request_number = await generateRequestNumber();
         requestData.status = 'PENDING';
 
-        const request = await Request.create(requestData, { transaction });
+        const request = await requestRepository.createRequest(requestData, { transaction });
 
         if (imageUrls && imageUrls.length > 0) {
             const imageRecords = imageUrls.map(url => ({
@@ -325,10 +226,10 @@ const createRequest = async (data) => {
                 image_type: 'ATTACHMENT',
                 uploaded_by: requestData.resident_id
             }));
-            await RequestImage.bulkCreate(imageRecords, { transaction });
+            await requestRepository.bulkCreateRequestImages(imageRecords, { transaction });
         }
 
-        await RequestStatusHistory.create({
+        await requestRepository.createStatusHistory({
             request_id: request.id,
             from_status: null,
             to_status: 'PENDING',
@@ -383,9 +284,7 @@ const assignRequest = async (id, staff_id, actor) => {
         throw new AppError('Chỉ có thể phân công yêu cầu đang chờ xử lý', 400);
     }
 
-    const staff = await User.findByPk(staff_id, {
-        attributes: ['id', 'role', 'building_id', 'is_active'],
-    });
+    const staff = await requestRepository.findStaffAssignmentCandidate(staff_id);
 
     if (!staff) {
         throw new AppError('Không tìm thấy nhân viên được phân công', 404);
@@ -408,13 +307,13 @@ const assignRequest = async (id, staff_id, actor) => {
 
     const transaction = await sequelize.transaction();
     try {
-        await request.update({
+        await requestRepository.updateRequest(request, {
             assigned_staff_id: staff_id,
             status: finalStatus,
             ...(isCheckout && { request_price: 0 })
         }, { transaction });
 
-        await RequestStatusHistory.create({
+        await requestRepository.createStatusHistory({
             request_id: request.id,
             from_status: 'PENDING',
             to_status: 'ASSIGNED',
@@ -424,7 +323,7 @@ const assignRequest = async (id, staff_id, actor) => {
 
         if (isCheckout) {
             for (const [from, to] of [['ASSIGNED', 'PRICE_PROPOSED'], ['PRICE_PROPOSED', 'APPROVED'], ['APPROVED', 'IN_PROGRESS']]) {
-                await RequestStatusHistory.create({
+                await requestRepository.createStatusHistory({
                     request_id: request.id,
                     from_status: from,
                     to_status: to,
@@ -505,7 +404,7 @@ const updateRequestStatus = async (id, updateData, actor) => {
             requestUpdatePayload.refund_approved_at = new Date();
         }
 
-        await request.update(requestUpdatePayload, { transaction });
+        await requestRepository.updateRequest(request, requestUpdatePayload, { transaction });
 
         // Store completion images for DONE status.
         if (completionImages && completionImages.length > 0) {
@@ -515,10 +414,10 @@ const updateRequestStatus = async (id, updateData, actor) => {
                 image_type: 'COMPLETION',
                 uploaded_by: changed_by
             }));
-            await RequestImage.bulkCreate(imageRecords, { transaction });
+            await requestRepository.bulkCreateRequestImages(imageRecords, { transaction });
         }
 
-        await RequestStatusHistory.create({
+        await requestRepository.createStatusHistory({
             request_id: id,
             from_status: oldStatus,
             to_status: status,
@@ -588,23 +487,13 @@ const updateRequestStatus = async (id, updateData, actor) => {
 };
 
 const getRequestStats = async (caller) => {
-    const where = {};
-    const include = [];
-
+    let scopedBuildingId;
     if (caller.role === ROLES.BUILDING_MANAGER) {
         if (!caller.building_id) throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
-        include.push({
-            model: Room, as: 'room', attributes: [],
-            where: { building_id: caller.building_id }, required: true,
-        });
+        scopedBuildingId = caller.building_id;
     }
 
-    const rows = await Request.findAll({
-        where,
-        attributes: ['status', 'request_type'],
-        include,
-        raw: true,
-    });
+    const rows = await requestRepository.findRequestsForStats(scopedBuildingId);
 
     const byStatus = {};
     const byType = {};

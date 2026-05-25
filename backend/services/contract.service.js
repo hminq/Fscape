@@ -1,13 +1,5 @@
-const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
-const Contract = require('../models/contract.model');
-const ContractTemplate = require('../models/contractTemplate.model');
-const User = require('../models/user.model');
-const Room = require('../models/room.model');
-const Building = require('../models/building.model');
-const RoomType = require('../models/roomType.model');
-const CustomerProfile = require('../models/customerProfile.model');
-const Booking = require('../models/booking.model');
+const contractRepository = require('../repositories/contract.repository');
 const { ROLES } = require('../constants/roles');
 const AppError = require('../utils/AppError');
 const {
@@ -21,12 +13,9 @@ const { RENEWAL_MAX_GAP_DAYS } = require('../constants/jobTimeRules');
 const { generateSequentialId, generateNumberedId } = require('../utils/generateId');
 const { INVOICE_TYPE } = require('../constants/invoiceEnums');
 const { sendContractSigningEmail, sendInvoiceCreatedEmail, sendCheckInReminderEmail, sendManualExpiringReminderEmail, sendContractTerminatedEmail } = require('../utils/mail.util');
-const Invoice = require('../models/invoice.model');
 const { generateContractPdf } = require('../utils/pdf.util');
 const auditService = require('./audit.service');
 const { parseUTCDate } = require('../utils/date.util');
-const Request = require('../models/request.model');
-const RequestStatusHistory = require('../models/requestStatusHistory.model');
 const { createNotification } = require('./notification.service');
 const { generateRequestNumber } = require('./request.service');
 const { getRuntimeConfig } = require('../config/runtimeConfig');
@@ -112,19 +101,7 @@ const renderTemplate = (htmlContent, fields) => {
  * - BUILDING_MANAGER: can view contracts in assigned building, without timestamps.
  */
 const getAllContracts = async ({ page = 1, limit = 10, status, building_id, search } = {}, user) => {
-    const offset = (page - 1) * limit;
-    const where = {};
     const isAdmin = user.role === ROLES.ADMIN;
-
-    if (status) {
-        const statuses = status.split(',').map(s => s.trim()).filter(Boolean);
-        where.status = statuses.length > 1 ? { [Op.in]: statuses } : statuses[0];
-    }
-    if (search) {
-        where[Op.or] = [
-            { contract_number: { [Op.iLike]: `%${search}%` } }
-        ];
-    }
 
     // BM: force scope to their building
     if (!isAdmin && !user.building_id) {
@@ -132,28 +109,10 @@ const getAllContracts = async ({ page = 1, limit = 10, status, building_id, sear
     }
     const scopedBuildingId = isAdmin ? building_id : user.building_id;
 
-    const include = [
-        { model: User, as: 'customer', attributes: ['id', 'first_name', 'last_name', 'email'] },
-        {
-            model: Room,
-            as: 'room',
-            attributes: ['id', 'room_number', 'floor'],
-            ...(scopedBuildingId ? { required: true } : {}),
-            include: [{
-                model: Building,
-                as: 'building',
-                ...(scopedBuildingId ? { where: { id: scopedBuildingId }, required: true } : {})
-            }]
-        }
-    ];
-
-    const { count, rows } = await Contract.findAndCountAll({
-        where,
-        include,
-        limit: Number(limit),
-        offset: Number(offset),
-        order: [['createdAt', 'DESC']]
-    });
+    const { count, rows } = await contractRepository.findAndCountContracts(
+        { page, limit, status, building_id, search },
+        scopedBuildingId
+    );
 
     return {
         total: count,
@@ -171,18 +130,7 @@ const getAllContracts = async ({ page = 1, limit = 10, status, building_id, sear
  * - RESIDENT / CUSTOMER: own contracts only.
  */
 const getContractById = async (id, user) => {
-    const contract = await Contract.findByPk(id, {
-        include: [
-            { model: User, as: 'customer' },
-            { model: User, as: 'manager' },
-            {
-                model: Room,
-                as: 'room',
-                include: [{ model: Building, as: 'building' }]
-            },
-            { model: ContractTemplate, as: 'template' }
-        ]
-    });
+    const contract = await contractRepository.findContractDetailById(id);
     if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
@@ -213,13 +161,7 @@ const getContractById = async (id, user) => {
  * - BUILDING_MANAGER: can update contracts in assigned building.
  */
 const updateContract = async (id, data, user) => {
-    const contract = await Contract.findByPk(id, {
-        include: [{
-            model: Room,
-            as: 'room',
-            include: [{ model: Building, as: 'building' }]
-        }]
-    });
+    const contract = await contractRepository.findContractWithRoomById(id);
     if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
@@ -230,7 +172,7 @@ const updateContract = async (id, data, user) => {
         }
     }
 
-    return await contract.update(data);
+    return await contractRepository.updateContract(contract, data);
 };
 
 /**
@@ -240,60 +182,9 @@ const getMyContracts = async (userId, query = {}) => {
     const {
         page = 1,
         limit = 10,
-        sort_by = 'created_at',
-        sort_order = 'DESC',
-        status,
-        search,
     } = query;
 
-    const offset = (page - 1) * limit;
-    const where = { customer_id: userId };
-
-    // Status filter
-    if (status === 'action_needed') {
-        where.status = { [Op.in]: ['DRAFT', 'PENDING_CUSTOMER_SIGNATURE', 'PENDING_MANAGER_SIGNATURE', 'PENDING_FIRST_PAYMENT'] };
-    } else if (status && status !== 'all') {
-        where.status = status;
-    }
-
-    // Search by contract_number
-    if (search) {
-        where.contract_number = { [Op.iLike]: `%${search}%` };
-    }
-
-    // Allowed sort columns
-    const sortColumnMap = {
-        created_at: 'createdAt',
-        start_date: 'start_date',
-        end_date: 'end_date',
-        base_rent: 'base_rent',
-        status: 'status',
-    };
-    const sortCol = sortColumnMap[sort_by] || 'createdAt';
-    const sortDir = sort_order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-    const { count, rows } = await Contract.findAndCountAll({
-        where,
-        attributes: [
-            'id', 'contract_number', 'status', 'start_date', 'end_date',
-            'base_rent', 'deposit_amount', 'pdf_url', 'rendered_content',
-            'customer_signed_at', 'manager_signed_at', 'signature_expires_at',
-            'createdAt'
-        ],
-        include: [{
-            model: Room,
-            as: 'room',
-            attributes: ['id', 'room_number', 'floor', 'thumbnail_url'],
-            include: [
-                { model: Building, as: 'building', attributes: ['id', 'name', 'address'] },
-                { model: RoomType, as: 'room_type', attributes: ['id', 'name'] }
-            ]
-        }],
-        distinct: true,
-        limit: Number(limit),
-        offset: Number(offset),
-        order: [[sortCol, sortDir]],
-    });
+    const { count, rows } = await contractRepository.findAndCountMyContracts(userId, query);
 
     return {
         total: count,
@@ -323,18 +214,7 @@ const createContractFromBooking = async (bookingId) => {
 
     try {
         // 1) Load booking, room, room type, and building.
-        const { RoomType } = sequelize.models;
-        const booking = await Booking.findByPk(bookingId, {
-            include: [{
-                model: Room,
-                as: 'room',
-                include: [
-                    { model: RoomType, as: 'room_type' },
-                    { model: Building, as: 'building' }
-                ]
-            }],
-            transaction
-        });
+        const booking = await contractRepository.findDepositPaidBookingWithRoom(bookingId, { transaction });
 
         if (!booking) throw new AppError('Không tìm thấy đơn đặt phòng', 404);
         if (booking.status !== 'DEPOSIT_PAID') {
@@ -346,24 +226,15 @@ const createContractFromBooking = async (bookingId) => {
         const roomType = room.room_type;
 
         // 2) Load customer and profile.
-        const customer = await User.findByPk(booking.customer_id, {
-            include: [{ model: CustomerProfile, as: 'profile' }],
-            transaction
-        });
+        const customer = await contractRepository.findUserWithProfileById(booking.customer_id, { transaction });
         if (!customer) throw new AppError('Không tìm thấy khách hàng', 404);
 
         // 3) Load building manager.
-        const manager = await User.findOne({
-            where: { building_id: building.id, role: ROLES.BUILDING_MANAGER, is_active: true },
-            transaction
-        });
+        const manager = await contractRepository.findActiveBuildingManager(building.id, { transaction });
         if (!manager) throw new AppError('Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này', 400);
 
         // 4) Load default contract template.
-        const template = await ContractTemplate.findOne({
-            where: { is_default: true, is_active: true },
-            transaction
-        });
+        const template = await contractRepository.findDefaultTemplate({ transaction });
         if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng mặc định đang hoạt động', 400);
 
         // 5) Resolve dates and billing values.
@@ -378,7 +249,7 @@ const createContractFromBooking = async (bookingId) => {
         const billingCycle = booking.billing_cycle;
 
         // 6. Generate contract number
-        const currentCount = await Contract.count({ transaction });
+        const currentCount = await contractRepository.countContracts({ transaction });
         const contractNumber = generateSequentialId('CON', currentCount);
 
         // 7. Build dynamic_fields
@@ -413,7 +284,7 @@ const createContractFromBooking = async (bookingId) => {
         const renderedContent = renderTemplate(template.content, dynamicFields);
 
         // 9. Create contract
-        const contract = await Contract.create({
+        const contract = await contractRepository.createContract({
             contract_number: contractNumber,
             template_id: template.id,
             room_id: room.id,
@@ -435,7 +306,7 @@ const createContractFromBooking = async (bookingId) => {
         }, { transaction });
 
         // 10. Link booking to contract
-        await booking.update({ contract_id: contract.id }, { transaction });
+        await contractRepository.updateBooking(booking, { contract_id: contract.id }, { transaction });
 
         await transaction.commit();
 
@@ -484,17 +355,7 @@ const renewContract = async (contractId, body, user) => {
 
     try {
         // 1. Fetch old contract with associations
-        const oldContract = await Contract.findByPk(contractId, {
-            include: [{
-                model: Room,
-                as: 'room',
-                include: [
-                    { model: RoomType, as: 'room_type' },
-                    { model: Building, as: 'building' }
-                ]
-            }],
-            transaction
-        });
+        const oldContract = await contractRepository.findRenewableContractById(contractId, { transaction });
         if (!oldContract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
         // 2. Only RESIDENT who owns the contract can renew
@@ -511,13 +372,7 @@ const renewContract = async (contractId, body, user) => {
         }
 
         // 4. Prevent duplicate pending renewals (only block if one is actively being signed)
-        const existingRenewal = await Contract.findOne({
-            where: {
-                renewed_from_contract_id: contractId,
-                status: { [Op.in]: ['PENDING_CUSTOMER_SIGNATURE', 'PENDING_MANAGER_SIGNATURE'] }
-            },
-            transaction
-        });
+        const existingRenewal = await contractRepository.findPendingRenewal(contractId, { transaction });
         if (existingRenewal) {
             throw new AppError('Hợp đồng này đã có yêu cầu gia hạn đang chờ xử lý', 400);
         }
@@ -553,24 +408,15 @@ const renewContract = async (contractId, body, user) => {
         const roomType = room.room_type;
 
         // 8. Fetch customer + profile
-        const customer = await User.findByPk(oldContract.customer_id, {
-            include: [{ model: CustomerProfile, as: 'profile' }],
-            transaction
-        });
+        const customer = await contractRepository.findUserWithProfileById(oldContract.customer_id, { transaction });
         if (!customer) throw new AppError('Không tìm thấy khách hàng', 404);
 
         // 9. Fetch building manager
-        const manager = await User.findOne({
-            where: { building_id: building.id, role: ROLES.BUILDING_MANAGER, is_active: true },
-            transaction
-        });
+        const manager = await contractRepository.findActiveBuildingManager(building.id, { transaction });
         if (!manager) throw new AppError('Không tìm thấy Quản lý tòa nhà đang hoạt động cho tòa nhà này', 400);
 
         // 10. Fetch default contract template
-        const template = await ContractTemplate.findOne({
-            where: { is_default: true, is_active: true },
-            transaction
-        });
+        const template = await contractRepository.findDefaultTemplate({ transaction });
         if (!template) throw new AppError('Không tìm thấy mẫu hợp đồng mặc định đang hoạt động', 400);
 
         // 11. Calculate dates
@@ -578,7 +424,7 @@ const renewContract = async (contractId, body, user) => {
         const endDate = addMonths(startDate, durationMonths);
 
         // 11. Generate contract number
-        const currentCount = await Contract.count({ transaction });
+        const currentCount = await contractRepository.countContracts({ transaction });
         const contractNumber = generateSequentialId('CON', currentCount);
 
         // 12. Build dynamic_fields (same pattern as createContractFromBooking)
@@ -609,7 +455,7 @@ const renewContract = async (contractId, body, user) => {
         const renderedContent = renderTemplate(template.content, dynamicFields);
 
         // 14. Create new contract
-        const newContract = await Contract.create({
+        const newContract = await contractRepository.createContract({
             contract_number: contractNumber,
             template_id: template.id,
             room_id: room.id,
@@ -633,8 +479,7 @@ const renewContract = async (contractId, body, user) => {
         }, { transaction });
 
         // 15. Create ContractExtension record (audit trail)
-        const { ContractExtension } = sequelize.models;
-        await ContractExtension.create({
+        await contractRepository.createContractExtension({
             contract_id: newContract.id,
             previous_end_date: oldContract.end_date,
             new_end_date: endDate,
@@ -682,13 +527,7 @@ const renewContract = async (contractId, body, user) => {
  *   6. Audit log
  */
 const customerSign = async (contractId, signatureUrl, user, req) => {
-    const contract = await Contract.findByPk(contractId, {
-        include: [{
-            model: Room,
-            as: 'room',
-            include: [{ model: Building, as: 'building' }]
-        }]
-    });
+    const contract = await contractRepository.findContractForCustomerSign(contractId);
     if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     if (contract.status !== 'PENDING_CUSTOMER_SIGNATURE') {
@@ -710,7 +549,7 @@ const customerSign = async (contractId, signatureUrl, user, req) => {
     let updatedContent = contract.rendered_content || '';
     updatedContent = updatedContent.replace('{{customer_signature}}', signatureImg);
 
-    await contract.update({
+    await contractRepository.updateContract(contract, {
         customer_signature_url: signatureUrl,
         customer_signed_at: new Date(),
         rendered_content: updatedContent,
@@ -730,8 +569,8 @@ const customerSign = async (contractId, signatureUrl, user, req) => {
     });
 
     // Send email to Building Manager to sign
-    const manager = await User.findByPk(contract.manager_id);
-    const customer = await User.findByPk(contract.customer_id);
+    const manager = await contractRepository.findUserById(contract.manager_id);
+    const customer = await contractRepository.findUserById(contract.customer_id);
     if (manager && customer) {
         const { urls } = getRuntimeConfig();
         const adminUrl = urls.admin;
@@ -771,14 +610,7 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const contract = await Contract.findByPk(contractId, {
-            include: [{
-                model: Room,
-                as: 'room',
-                include: [{ model: Building, as: 'building' }]
-            }],
-            transaction
-        });
+        const contract = await contractRepository.findContractForManagerSign(contractId, { transaction });
         if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
         if (contract.status !== 'PENDING_MANAGER_SIGNATURE') {
@@ -818,7 +650,7 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
         );
 
         // 1. Update contract → PENDING_FIRST_PAYMENT (awaiting 1st rent payment)
-        await contract.update({
+        await contractRepository.updateContract(contract, {
             manager_signature_url: signatureUrl,
             manager_signed_at: new Date(),
             rendered_content: updatedContent,
@@ -837,9 +669,9 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
 
             // Safety net: restore RESIDENT role if cron downgraded it
             // (edge case: old contract expired before renewal was signed)
-            const customer = await User.findByPk(contract.customer_id, { transaction });
+            const customer = await contractRepository.findUserById(contract.customer_id, { transaction });
             if (customer && customer.role === ROLES.CUSTOMER) {
-                await customer.update({
+                await contractRepository.updateUser(customer, {
                     role: ROLES.RESIDENT,
                     building_id: contractBuildingId
                 }, { transaction });
@@ -851,12 +683,9 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
             //   - Room → OCCUPIED on check-in (inspection service)
 
             // Booking → CONVERTED
-            const booking = await Booking.findOne({
-                where: { contract_id: contract.id },
-                transaction
-            });
+            const booking = await contractRepository.findBookingByContractId(contract.id, { transaction });
             if (booking) {
-                await booking.update({
+                await contractRepository.updateBooking(booking, {
                     status: 'CONVERTED',
                     converted_at: new Date()
                 }, { transaction });
@@ -864,8 +693,6 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
         }
 
         // 5. Create first RENT invoice
-        const { Invoice, InvoiceItem } = sequelize.models;
-
         const billingPeriodStart = contract.start_date; // YYYY-MM-DD string
         let billingPeriodEnd;
         let rentMonths;
@@ -884,7 +711,7 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
 
         const roomRent = Number(contract.base_rent) * rentMonths;
 
-        const firstInvoice = await Invoice.create({
+        const firstInvoice = await contractRepository.createInvoice({
             invoice_number: generateNumberedId('INV'),
             contract_id: contract.id,
             invoice_type: INVOICE_TYPE.RENT,
@@ -898,7 +725,7 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
             due_date: contract.start_date
         }, { transaction });
 
-        await InvoiceItem.create({
+        await contractRepository.createInvoiceItem({
             invoice_id: firstInvoice.id,
             item_type: 'RENT',
             description: `Tiền thuê phòng từ ${billingPeriodStart} đến ${billingPeriodEnd}`,
@@ -923,13 +750,13 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
         // Generate final PDF and upload to S3 (async, non-blocking)
         generateContractPdf(contract.rendered_content, contract.contract_number)
             .then(async (pdfUrl) => {
-                await Contract.update({ pdf_url: pdfUrl }, { where: { id: contract.id } });
+                await contractRepository.updateContractPdfUrl(contract.id, pdfUrl);
                 console.log(`[ContractService] PDF generated: ${pdfUrl}`);
             })
             .catch(err => console.error('[ContractService] Failed to generate PDF:', err));
 
         // Send signing confirmation + first invoice email to customer
-        const customerForEmail = await User.findByPk(contract.customer_id);
+        const customerForEmail = await contractRepository.findUserById(contract.customer_id);
         if (customerForEmail) {
             const customerName = `${customerForEmail.last_name || ''} ${customerForEmail.first_name || ''}`.trim();
 
@@ -956,25 +783,15 @@ const managerSign = async (contractId, signatureUrl, user, req) => {
 };
 
 const getContractStats = async (user) => {
-    const include = [{
-        model: Room, as: 'room', attributes: ['id'],
-        include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }]
-    }];
-
+    let scopedBuildingId;
     if (user?.role === ROLES.BUILDING_MANAGER) {
         if (!user.building_id) {
             throw new AppError('Quản lý tòa nhà chưa được phân công tòa nhà nào', 403);
         }
-        include[0].include[0].where = { id: user.building_id };
-        include[0].include[0].required = true;
-        include[0].required = true;
+        scopedBuildingId = user.building_id;
     }
 
-    const contracts = await Contract.findAll({
-        attributes: ['status', 'room_id'],
-        include,
-        raw: true, nest: true,
-    });
+    const contracts = await contractRepository.findContractsForStats(scopedBuildingId);
 
     const byStatus = {
         pending_customer_signature: 0, pending_manager_signature: 0,
@@ -1014,15 +831,7 @@ const REMINDER_LABEL = {
 };
 
 const sendManualReminder = async (contractId, reminderType, user) => {
-    const contract = await Contract.findByPk(contractId, {
-        include: [
-            { model: User, as: 'customer', attributes: ['id', 'first_name', 'last_name', 'email'] },
-            {
-                model: Room, as: 'room', attributes: ['id', 'room_number'],
-                include: [{ model: Building, as: 'building' }]
-            }
-        ]
-    });
+    const contract = await contractRepository.findContractForReminder(contractId);
     if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     // BM scope check
@@ -1059,10 +868,7 @@ const sendManualReminder = async (contractId, reminderType, user) => {
             break;
         }
         case 'PAY_FIRST_RENT': {
-            const invoice = await Invoice.findOne({
-                where: { contract_id: contractId, invoice_type: INVOICE_TYPE.RENT, status: 'UNPAID' },
-                order: [['createdAt', 'ASC']],
-            });
+            const invoice = await contractRepository.findFirstUnpaidRentInvoice(contractId);
             if (!invoice) throw new AppError('Không tìm thấy hóa đơn chưa thanh toán', 400);
             await sendInvoiceCreatedEmail(customer.email, {
                 customerName,
@@ -1118,15 +924,7 @@ const ACTIVE_STATUSES = ['ACTIVE', 'EXPIRING_SOON'];
 const terminateContract = async (contractId, body, user, req) => {
     const { termination_reason, assigned_staff_id } = body;
 
-    const contract = await Contract.findByPk(contractId, {
-        include: [
-            { model: User, as: 'customer', attributes: ['id', 'email', 'first_name', 'last_name', 'role'] },
-            {
-                model: Room, as: 'room', attributes: ['id', 'room_number', 'status'],
-                include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }]
-            }
-        ]
-    });
+    const contract = await contractRepository.findContractForTermination(contractId);
     if (!contract) throw new AppError('Không tìm thấy hợp đồng', 404);
 
     if (['TERMINATED', 'FINISHED'].includes(contract.status)) {
@@ -1156,7 +954,7 @@ const terminateContract = async (contractId, body, user, req) => {
     // Validate staff if provided
     let staff = null;
     if (assigned_staff_id) {
-        staff = await User.findByPk(assigned_staff_id);
+        staff = await contractRepository.findUserById(assigned_staff_id);
         if (!staff) throw new AppError('Không tìm thấy nhân viên', 400);
         if (staff.role !== ROLES.STAFF) throw new AppError('Người dùng được chỉ định không phải nhân viên', 400);
         if (staff.building_id !== contractBuildingId) {
@@ -1170,45 +968,33 @@ const terminateContract = async (contractId, body, user, req) => {
     try {
         if (isPending) {
             // Case 1: pending contract -> terminate immediately.
-            await contract.update({
+            await contractRepository.updateContract(contract, {
                 status: 'TERMINATED',
                 notes: `[Chấm dứt bởi ${user.role}] ${termination_reason}`,
                 signature_expires_at: null
             }, { transaction });
 
             // Cancel associated booking
-            const booking = await Booking.findOne({
-                where: { contract_id: contract.id },
-                transaction
-            });
+            const booking = await contractRepository.findBookingByContractId(contract.id, { transaction });
             if (booking) {
-                await booking.update({
+                await contractRepository.updateBooking(booking, {
                     status: 'CANCELLED',
                     cancelled_at: new Date(),
                     cancellation_reason: `Hợp đồng bị chấm dứt: ${termination_reason}`
                 }, { transaction });
 
-                await Room.update(
-                    { status: 'AVAILABLE' },
-                    { where: { id: booking.room_id }, transaction }
-                );
+                await contractRepository.updateRoomStatus(booking.room_id, 'AVAILABLE', { transaction });
             }
 
             // Demote RESIDENT → CUSTOMER if no other active/expiring contracts
             if (contract.customer && contract.customer.role === ROLES.RESIDENT) {
-                const otherActive = await Contract.count({
-                    where: {
-                        customer_id: contract.customer_id,
-                        id: { [Op.ne]: contract.id },
-                        status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON'] }
-                    },
-                    transaction
-                });
+                const otherActive = await contractRepository.countOtherActiveContracts(
+                    contract.customer_id,
+                    contract.id,
+                    { transaction }
+                );
                 if (otherActive === 0) {
-                    await User.update(
-                        { role: ROLES.CUSTOMER },
-                        { where: { id: contract.customer_id }, transaction }
-                    );
+                    await contractRepository.updateUserById(contract.customer_id, { role: ROLES.CUSTOMER }, { transaction });
                 }
             }
 
@@ -1257,12 +1043,12 @@ const terminateContract = async (contractId, body, user, req) => {
 
         } else {
             // Case 2: active contract -> create IN_PROGRESS checkout request.
-            await contract.update({
+            await contractRepository.updateContract(contract, {
                 notes: `[Chấm dứt bởi ${user.role}] ${termination_reason}`
             }, { transaction });
 
             const requestNumber = await generateRequestNumber();
-            const checkoutRequest = await Request.create({
+            const checkoutRequest = await contractRepository.createRequest({
                 request_number: requestNumber,
                 room_id: contract.room_id,
                 resident_id: contract.customer_id,
@@ -1283,7 +1069,7 @@ const terminateContract = async (contractId, body, user, req) => {
                 { from: 'APPROVED', to: 'IN_PROGRESS' }
             ];
             for (const entry of statusChain) {
-                await RequestStatusHistory.create({
+                await contractRepository.createRequestStatusHistory({
                     request_id: checkoutRequest.id,
                     from_status: entry.from,
                     to_status: entry.to,

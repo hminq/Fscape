@@ -1,11 +1,7 @@
 const { Op } = require('sequelize');
 const { randomUUID } = require('crypto');
 const { sequelize } = require('../config/db');
-const Asset = require('../models/asset.model');
-const AssetHistory = require('../models/assetHistory.model');
-const Building = require('../models/building.model');
-const Room = require('../models/room.model');
-const Request = require('../models/request.model');
+const assetRepository = require('../repositories/asset.repository');
 
 const AppError = require('../utils/AppError');
 const { ROLES } = require('../constants/roles');
@@ -160,21 +156,9 @@ const getAllAssets = async (query = {}, user = {}) => {
         ];
     }
 
-    const include = [
-        { model: Building, as: 'building', attributes: ['id', 'name'] },
-        { model: Room, as: 'room', attributes: ['id', 'room_number', 'floor', 'building_id'] },
-        { model: require('../models/assetType.model'), as: 'asset_type', attributes: ['id', 'name'] }
-    ];
-
     if (grouped === 'true' || grouped === true) {
-        const rows = await Asset.findAll({
+        const rows = await assetRepository.findAssets({
             where,
-            include,
-            order: [
-                [{ model: Building, as: 'building' }, 'name', 'ASC'],
-                [{ model: Room, as: 'room' }, 'floor', 'ASC'],
-                ['createdAt', 'DESC']
-            ]
         });
 
         const data = buildBuildingHierarchy(rows);
@@ -194,13 +178,10 @@ const getAllAssets = async (query = {}, user = {}) => {
         };
     }
 
-    const { count, rows } = await Asset.findAndCountAll({
+    const { count, rows } = await assetRepository.findAndCountAssets({
         where,
-        include,
-        distinct: true,
         limit: Number(limit),
         offset: (page - 1) * limit,
-        order: [['createdAt', 'DESC']]
     });
 
     let data = rows;
@@ -222,18 +203,7 @@ const getAllAssets = async (query = {}, user = {}) => {
 
 // GET /api/assets/:id
 const getAssetById = async (id, user = {}) => {
-    const asset = await Asset.findByPk(id, {
-        include: [
-            { model: Building, as: 'building' },
-            { model: Room, as: 'room' },
-            {
-                model: AssetHistory,
-                as: 'histories',
-                limit: 10,
-                order: [['createdAt', 'DESC']]
-            }
-        ]
-    });
+    const asset = await assetRepository.findAssetDetailById(id);
     if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
@@ -252,12 +222,12 @@ const createAsset = async (data) => {
         data.qr_code = `FSCAPE-AST-${randomUUID()}`;
 
         // Validate building exists
-        const building = await Building.findByPk(data.building_id);
+        const building = await assetRepository.findBuildingById(data.building_id);
         if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
         // If assigning to room at creation, validate room is in same building
         if (data.current_room_id) {
-            const room = await Room.findByPk(data.current_room_id);
+            const room = await assetRepository.findRoomById(data.current_room_id);
             if (!room) throw new AppError('Không tìm thấy phòng', 404);
             if (room.building_id !== data.building_id) {
                 throw new AppError('Phòng không thuộc tòa nhà được chỉ định', 400);
@@ -266,16 +236,15 @@ const createAsset = async (data) => {
 
         // Auto-fill price from AssetType if not provided
         if (!data.price && data.asset_type_id) {
-            const AssetType = require('../models/assetType.model');
-            const at = await AssetType.findByPk(data.asset_type_id);
+            const at = await assetRepository.findAssetTypeById(data.asset_type_id);
             if (at && at.default_price) {
                 data.price = at.default_price;
             }
         }
 
-        const asset = await Asset.create(data, { transaction });
+        const asset = await assetRepository.createAsset(data, { transaction });
 
-        await AssetHistory.create({
+        await assetRepository.createAssetHistory({
             asset_id: asset.id,
             to_room_id: data.current_room_id || null,
             to_status: data.status || 'AVAILABLE',
@@ -303,13 +272,12 @@ const createBatchAssets = async (data) => {
         throw new AppError('Số lượng phải từ 1 đến 100', 400);
     }
 
-    const building = await Building.findByPk(building_id);
+    const building = await assetRepository.findBuildingById(building_id);
     if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     let resolvedPrice = price || null;
     if (asset_type_id) {
-        const AssetType = require('../models/assetType.model');
-        const at = await AssetType.findByPk(asset_type_id);
+        const at = await assetRepository.findAssetTypeById(asset_type_id);
         if (!at) throw new AppError('Không tìm thấy loại tài sản', 404);
         if (!resolvedPrice && at.default_price) {
             resolvedPrice = at.default_price;
@@ -321,7 +289,7 @@ const createBatchAssets = async (data) => {
         const created = [];
         for (let i = 0; i < quantity; i++) {
             const qr_code = `FSCAPE-AST-${randomUUID()}`;
-            const asset = await Asset.create({
+            const asset = await assetRepository.createAsset({
                 name,
                 building_id,
                 asset_type_id: asset_type_id || null,
@@ -330,7 +298,7 @@ const createBatchAssets = async (data) => {
                 status: 'AVAILABLE',
             }, { transaction });
 
-            await AssetHistory.create({
+            await assetRepository.createAssetHistory({
                 asset_id: asset.id,
                 to_status: 'AVAILABLE',
                 from_status: 'AVAILABLE',
@@ -350,7 +318,7 @@ const createBatchAssets = async (data) => {
 
 // PUT /api/assets/:id (ADMIN only)
 const updateAsset = async (id, data, user) => {
-    const asset = await Asset.findByPk(id);
+    const asset = await assetRepository.findAssetById(id);
     if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
@@ -379,7 +347,7 @@ const updateAsset = async (id, data, user) => {
                 throw new AppError('Chỉ có thể chuyển tòa nhà khi tài sản đang ở kho', 400);
             }
 
-            const building = await Building.findByPk(targetBuildingId);
+            const building = await assetRepository.findBuildingById(targetBuildingId);
             if (!building) {
                 throw new AppError('Không tìm thấy tòa nhà đích', 404);
             }
@@ -391,7 +359,7 @@ const updateAsset = async (id, data, user) => {
         }
 
         if (targetRoomId) {
-            const room = await Room.findByPk(targetRoomId);
+            const room = await assetRepository.findRoomById(targetRoomId);
             if (!room) throw new AppError('Không tìm thấy phòng', 404);
             if (room.building_id !== targetBuildingId) {
                 throw new AppError('Phòng không thuộc tòa nhà của tài sản', 400);
@@ -406,10 +374,10 @@ const updateAsset = async (id, data, user) => {
             throw new AppError('Không thể đổi trạng thái tại màn hình này. Trạng thái tài sản được cập nhật qua quy trình vận hành.', 400);
         }
 
-        await asset.update(data, { transaction });
+        await assetRepository.updateAsset(asset, data, { transaction });
 
         if (buildingChanged) {
-            await AssetHistory.create({
+            await assetRepository.createAssetHistory({
                 asset_id: asset.id,
                 from_room_id: null,
                 to_room_id: null,
@@ -420,7 +388,7 @@ const updateAsset = async (id, data, user) => {
                 notes: data.notes || 'Chuyển tài sản sang kho của tòa nhà khác'
             }, { transaction });
         } else if (data.status !== oldStatus || data.current_room_id !== oldRoom) {
-            await AssetHistory.create({
+            await assetRepository.createAssetHistory({
                 asset_id: asset.id,
                 from_room_id: oldRoom,
                 to_room_id: data.current_room_id ?? oldRoom,
@@ -442,7 +410,7 @@ const updateAsset = async (id, data, user) => {
 
 // PATCH /api/assets/:id/assign (STAFF, BM, ADMIN)
 const assignAsset = async (id, { room_id, notes }, user) => {
-    const asset = await Asset.findByPk(id);
+    const asset = await assetRepository.findAssetById(id);
     if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     ensureBuildingAccess(user, asset.building_id);
@@ -459,7 +427,7 @@ const assignAsset = async (id, { room_id, notes }, user) => {
     try {
         if (room_id) {
             // CHECK_IN only: storage -> room
-            const room = await Room.findByPk(room_id);
+            const room = await assetRepository.findRoomById(room_id);
             if (!room) throw new AppError('Không tìm thấy phòng đích', 404);
             if (room.building_id !== asset.building_id) {
                 throw new AppError('Phòng đích không cùng tòa nhà với tài sản', 400);
@@ -473,17 +441,17 @@ const assignAsset = async (id, { room_id, notes }, user) => {
                 throw new AppError('Không thể chuyển trực tiếp tài sản giữa hai phòng. Vui lòng thu hồi về kho trước.', 400);
             }
 
-            await asset.update({ current_room_id: room_id, status: 'IN_USE' }, { transaction });
+            await assetRepository.updateAsset(asset, { current_room_id: room_id, status: 'IN_USE' }, { transaction });
         } else {
             // CHECK_OUT
             if (!oldRoom) {
                 throw new AppError('Tài sản chưa được gán cho phòng nào', 400);
             }
             action = 'CHECK_OUT';
-            await asset.update({ current_room_id: null, status: 'AVAILABLE' }, { transaction });
+            await assetRepository.updateAsset(asset, { current_room_id: null, status: 'AVAILABLE' }, { transaction });
         }
 
-        await AssetHistory.create({
+        await assetRepository.createAssetHistory({
             asset_id: asset.id,
             from_room_id: oldRoom,
             to_room_id: room_id || null,
@@ -504,7 +472,7 @@ const assignAsset = async (id, { room_id, notes }, user) => {
 
 // DELETE /api/assets/:id (ADMIN only)
 const deleteAsset = async (id) => {
-    const asset = await Asset.findByPk(id);
+    const asset = await assetRepository.findAssetById(id);
     if (!asset) throw new AppError('Không tìm thấy tài sản', 404);
 
     if (asset.status === 'IN_USE') {
@@ -512,17 +480,12 @@ const deleteAsset = async (id) => {
     }
 
     // Check if asset is referenced in active maintenance requests
-    const activeRequest = await Request.findOne({
-        where: {
-            related_asset_id: id,
-            status: { [Op.notIn]: ['COMPLETED', 'CANCELLED', 'REVIEWED'] }
-        }
-    });
+    const activeRequest = await assetRepository.findActiveMaintenanceRequestForAsset(id);
     if (activeRequest) {
         throw new AppError('Không thể xóa tài sản có yêu cầu bảo trì đang hoạt động', 409);
     }
 
-    await asset.destroy();
+    await assetRepository.destroyAsset(asset);
     return { message: `Đã xóa tài sản "${asset.name}" thành công` };
 };
 
@@ -534,13 +497,7 @@ const getAssetStats = async (user = {}) => {
         where.building_id = user.building_id;
     }
 
-    const assets = await Asset.findAll({
-        where,
-        attributes: ['status', 'building_id'],
-        include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }],
-        raw: true,
-        nest: true,
-    });
+    const assets = await assetRepository.findAssetsForStats(where);
 
     const byStatus = { available: 0, in_use: 0 };
     const byBuilding = {};

@@ -1,21 +1,10 @@
-const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
-const Asset = require('../models/asset.model');
-const AssetType = require('../models/assetType.model');
-const AssetHistory = require('../models/assetHistory.model');
-const AssetInspection = require('../models/assetInspection.model');
-const AssetInspectionItem = require('../models/assetInspectionItem.model');
-const Room = require('../models/room.model');
-const RoomTypeAsset = require('../models/roomTypeAsset.model');
-const Contract = require('../models/contract.model');
-const User = require('../models/user.model');
-const Request = require('../models/request.model');
+const inspectionRepository = require('../repositories/inspection.repository');
 const auditService = require('./audit.service');
 const settlementService = require('./settlement.service');
 
 const AppError = require('../utils/AppError');
 const { ROLES } = require('../constants/roles');
-const { REQUEST_SERVICE_BILLING_STATUS } = require('../constants/invoiceEnums');
 
 // Helpers.
 
@@ -29,14 +18,7 @@ function ensureBuildingAccess(user, room) {
 }
 
 async function ensureCheckoutRequest(roomId, staffId) {
-    const checkoutRequest = await Request.findOne({
-        where: {
-            room_id: roomId,
-            request_type: 'CHECKOUT',
-            status: 'IN_PROGRESS',
-            assigned_staff_id: staffId
-        }
-    });
+    const checkoutRequest = await inspectionRepository.findCheckoutRequest(roomId, staffId);
     if (!checkoutRequest) {
         throw new AppError('Không thể thực hiện trả phòng vì chưa có yêu cầu trả phòng đang xử lý được giao cho bạn', 403);
     }
@@ -44,11 +26,7 @@ async function ensureCheckoutRequest(roomId, staffId) {
 }
 
 function resolveScannedAssets(qrCodes) {
-    if (!qrCodes || qrCodes.length === 0) return Promise.resolve([]);
-    return Asset.findAll({
-        where: { qr_code: { [Op.in]: qrCodes } },
-        include: [{ model: AssetType, as: 'asset_type', attributes: ['id', 'name', 'default_price'] }]
-    });
+    return inspectionRepository.findAssetsByQrCodes(qrCodes);
 }
 
 function findUnknownQrCodes(qrCodes, scannedAssets) {
@@ -81,9 +59,7 @@ function pickClosestInspection(inspections, targetTime) {
 }
 
 async function resolveContractInspectionContext(roomId, contractId, caller) {
-    const contract = await Contract.findByPk(contractId, {
-        include: [{ model: Room, as: 'room' }]
-    });
+    const contract = await inspectionRepository.findContractWithRoomById(contractId);
 
     if (!contract) {
         throw new AppError('Không tìm thấy hợp đồng', 404);
@@ -134,10 +110,7 @@ function selectContractInspections(inspections, contract) {
 
 // CHECK-IN diff (type-based against room template).
 async function computeCheckInDiff(room, qrCodes) {
-    const template = await RoomTypeAsset.findAll({
-        where: { room_type_id: room.room_type_id },
-        include: [{ model: AssetType, as: 'asset_type', attributes: ['id', 'name', 'default_price'] }]
-    });
+    const template = await inspectionRepository.findRoomTypeAssetTemplate(room.room_type_id);
 
     const scannedAssets = await resolveScannedAssets(qrCodes);
     const unknownQrCodes = findUnknownQrCodes(qrCodes, scannedAssets);
@@ -203,10 +176,7 @@ async function computeCheckInDiff(room, qrCodes) {
 // CHECK-OUT diff (exact match against room assets).
 async function computeCheckOutDiff(room, qrCodes) {
     // Assets currently linked to this room
-    const expectedAssets = await Asset.findAll({
-        where: { current_room_id: room.id },
-        include: [{ model: AssetType, as: 'asset_type', attributes: ['id', 'name', 'default_price'] }]
-    });
+    const expectedAssets = await inspectionRepository.findAssetsInRoom(room.id);
 
     const scannedAssets = await resolveScannedAssets(qrCodes);
     const unknownQrCodes = findUnknownQrCodes(qrCodes, scannedAssets);
@@ -276,7 +246,7 @@ function buildConditionMap(assetsInput) {
 
 // POST /api/inspections/preview (STAFF, CHECK_OUT only)
 const previewInspection = async (roomId, assetsInput, user) => {
-    const room = await Room.findByPk(roomId);
+    const room = await inspectionRepository.findRoomById(roomId);
     if (!room) throw new AppError('Không tìm thấy phòng', 404);
     ensureBuildingAccess(user, room);
     await ensureCheckoutRequest(roomId, user.id);
@@ -309,27 +279,14 @@ const previewInspection = async (roomId, assetsInput, user) => {
     // Settlement preview (contract, unbilled services, and deposit).
     let settlementPreview = null;
 
-    const contract = await Contract.findOne({
-        where: {
-            room_id: room.id,
-            status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON', 'FINISHED'] }
-        },
-        order: [['created_at', 'DESC']]
-    });
+    const contract = await inspectionRepository.findLatestContractForRoom(room.id);
 
     if (contract) {
         const depositOriginal = Number(contract.deposit_original_amount || contract.deposit_amount);
         const depositBefore = Number(contract.deposit_amount);
 
         // Query unbilled service requests
-        const unbilledRequests = await Request.findAll({
-            where: {
-                room_id: room.id,
-                status: { [Op.in]: ['COMPLETED', 'DONE'] },
-                service_billing_status: REQUEST_SERVICE_BILLING_STATUS.UNBILLED,
-                request_price: { [Op.gt]: 0 }
-            }
-        });
+        const unbilledRequests = await inspectionRepository.findUnbilledServiceRequestsForRoom(room.id);
 
         const totalUnbilledService = unbilledRequests.reduce(
             (sum, req) => sum + Number(req.request_price || 0), 0
@@ -374,7 +331,7 @@ const previewInspection = async (roomId, assetsInput, user) => {
 
 // POST /api/inspections (STAFF, CHECK_OUT only)
 const confirmInspection = async (roomId, assetsInput, notes, user) => {
-    const room = await Room.findByPk(roomId);
+    const room = await inspectionRepository.findRoomById(roomId);
     if (!room) throw new AppError('Không tìm thấy phòng', 404);
     ensureBuildingAccess(user, room);
     await ensureCheckoutRequest(roomId, user.id);
@@ -409,7 +366,7 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
 
     const transaction = await sequelize.transaction();
     try {
-        const inspection = await AssetInspection.create({
+        const inspection = await inspectionRepository.createInspection({
             room_id: room.id,
             performed_by: user.id,
             type: 'CHECK_OUT',
@@ -426,7 +383,7 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
             condition: conditionMap[asset.qr_code]?.condition || 'GOOD',
             note: conditionMap[asset.qr_code]?.note || null
         }));
-        const items = await AssetInspectionItem.bulkCreate(itemRows, { transaction });
+        const items = await inspectionRepository.bulkCreateInspectionItems(itemRows, { transaction });
 
         // Build asset history records.
         const historyRows = [];
@@ -471,37 +428,24 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
         }
 
         if (historyRows.length > 0) {
-            await AssetHistory.bulkCreate(historyRows, { transaction });
+            await inspectionRepository.bulkCreateAssetHistory(historyRows, { transaction });
         }
 
         // Update asset statuses.
         const goodIds = matchedGood.map(a => a.id);
         if (goodIds.length > 0) {
-            await Asset.update(
-                { current_room_id: null, status: 'AVAILABLE' },
-                { where: { id: { [Op.in]: goodIds } }, transaction }
-            );
+            await inspectionRepository.updateAssetsByIds(goodIds, { current_room_id: null, status: 'AVAILABLE' }, { transaction });
         }
 
         const brokenIds = matchedBroken.map(a => a.id);
         const missingIds = diff._missingAssets.map(a => a.id);
         const maintenanceIds = [...brokenIds, ...missingIds];
         if (maintenanceIds.length > 0) {
-            await Asset.update(
-                { current_room_id: null, status: 'MAINTENANCE' },
-                { where: { id: { [Op.in]: maintenanceIds } }, transaction }
-            );
+            await inspectionRepository.updateAssetsByIds(maintenanceIds, { current_room_id: null, status: 'MAINTENANCE' }, { transaction });
         }
 
         // Load contract for settlement and status updates.
-        const contract = await Contract.findOne({
-            where: {
-                room_id: room.id,
-                status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON', 'FINISHED'] }
-            },
-            order: [['created_at', 'DESC']],
-            transaction
-        });
+        const contract = await inspectionRepository.findLatestContractForRoom(room.id, { transaction });
 
         let depositInfo = null;
         let settlement = null;
@@ -527,7 +471,7 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
 
             // Deduct deposit (keep for backward compatibility)
             if (hasDiscrepancy) {
-                await contract.update({ deposit_amount: finalDeposit }, { transaction });
+                await inspectionRepository.updateContract(contract, { deposit_amount: finalDeposit }, { transaction });
 
                 await auditService.log({
                     user,
@@ -540,22 +484,16 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
             }
 
             // Contract → FINISHED
-            await contract.update({ status: 'FINISHED' }, { transaction });
+            await inspectionRepository.updateContract(contract, { status: 'FINISHED' }, { transaction });
 
             // RESIDENT → CUSTOMER if no other active contracts
-            const otherActive = await Contract.count({
-                where: {
-                    customer_id: contract.customer_id,
-                    id: { [Op.ne]: contract.id },
-                    status: { [Op.in]: ['ACTIVE', 'EXPIRING_SOON'] }
-                },
-                transaction
-            });
+            const otherActive = await inspectionRepository.countOtherActiveContracts(
+                contract.customer_id,
+                contract.id,
+                { transaction }
+            );
             if (otherActive === 0) {
-                await User.update(
-                    { role: 'CUSTOMER' },
-                    { where: { id: contract.customer_id, role: 'RESIDENT' }, transaction }
-                );
+                await inspectionRepository.updateResidentToCustomer(contract.customer_id, { transaction });
             }
 
             depositInfo = {
@@ -570,10 +508,7 @@ async function confirmCheckOut(room, assetsInput, notes, user) {
         }
 
         // Room → AVAILABLE
-        await Room.update(
-            { status: 'AVAILABLE' },
-            { where: { id: room.id }, transaction }
-        );
+        await inspectionRepository.updateRoomStatus(room.id, 'AVAILABLE', { transaction });
 
         await transaction.commit();
 
@@ -620,14 +555,7 @@ async function resolveResidentContract(user, contractId, { forCheckIn = false } 
         ? ['PENDING_CHECK_IN']
         : ['ACTIVE', 'EXPIRING_SOON'];
 
-    const contract = await Contract.findOne({
-        where: {
-            id: contractId,
-            customer_id: user.id,
-            status: { [Op.in]: statuses }
-        },
-        include: [{ model: Room, as: 'room' }],
-    });
+    const contract = await inspectionRepository.findResidentContract(user.id, contractId, statuses);
 
     if (!contract || !contract.room) {
         const message = forCheckIn
@@ -734,7 +662,7 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
 
     const transaction = await sequelize.transaction();
     try {
-        const inspection = await AssetInspection.create({
+        const inspection = await inspectionRepository.createInspection({
             room_id: room.id,
             performed_by: user.id,
             type: 'CHECK_IN',
@@ -751,7 +679,7 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
             condition: conditionMap[asset.qr_code]?.condition || 'GOOD',
             note: conditionMap[asset.qr_code]?.note || null
         }));
-        const items = await AssetInspectionItem.bulkCreate(itemRows, { transaction });
+        const items = await inspectionRepository.bulkCreateInspectionItems(itemRows, { transaction });
 
         // Validate building matching before assignment
         for (const asset of assetsToAssign) {
@@ -763,10 +691,7 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
         // Assign assets to room
         if (assetsToAssign.length > 0) {
             const assetIds = assetsToAssign.map(a => a.id);
-            await Asset.update(
-                { current_room_id: room.id, status: 'IN_USE' },
-                { where: { id: { [Op.in]: assetIds } }, transaction }
-            );
+            await inspectionRepository.updateAssetsByIds(assetIds, { current_room_id: room.id, status: 'IN_USE' }, { transaction });
 
             const historyRows = assetsToAssign.map(asset => ({
                 asset_id: asset.id,
@@ -778,18 +703,12 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
                 performed_by: user.id,
                 notes: `inspection:${inspection.id}`
             }));
-            await AssetHistory.bulkCreate(historyRows, { transaction });
+            await inspectionRepository.bulkCreateAssetHistory(historyRows, { transaction });
         }
 
         // Contract → ACTIVE, Room → OCCUPIED (onboarding complete)
-        await Contract.update(
-            { status: 'ACTIVE' },
-            { where: { id: contract.id }, transaction }
-        );
-        await Room.update(
-            { status: 'OCCUPIED' },
-            { where: { id: room.id }, transaction }
-        );
+        await inspectionRepository.updateContractById(contract.id, { status: 'ACTIVE' }, { transaction });
+        await inspectionRepository.updateRoomStatus(room.id, 'OCCUPIED', { transaction });
 
         await transaction.commit();
 
@@ -808,16 +727,14 @@ const residentConfirmCheckIn = async (contractId, assetsInput, notes, user) => {
 // GET /api/inspections?room_id=
 const getInspectionsByRoom = async (roomId, caller, options = {}) => {
     const { contractId } = options;
-    const room = await Room.findByPk(roomId);
+    const room = await inspectionRepository.findRoomById(roomId);
     if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
     // Access control
     if (caller.role === ROLES.BUILDING_MANAGER || caller.role === ROLES.STAFF) {
         ensureBuildingAccess(caller, room);
     } else if (caller.role === ROLES.RESIDENT) {
-        const hasContract = await Contract.count({
-            where: { room_id: roomId, customer_id: caller.id }
-        });
+        const hasContract = await inspectionRepository.countContractsForRoomAndCustomer(roomId, caller.id);
         if (!hasContract) throw new AppError('Bạn không có quyền xem kiểm tra phòng này', 403);
     }
     // ADMIN: no restriction
@@ -827,17 +744,7 @@ const getInspectionsByRoom = async (roomId, caller, options = {}) => {
         contract = await resolveContractInspectionContext(roomId, contractId, caller);
     }
 
-    const inspections = await AssetInspection.findAll({
-        where: { room_id: roomId },
-        order: [['created_at', 'ASC']],
-        include: [
-            { model: User, as: 'performer', attributes: ['id', 'first_name', 'last_name', 'email'] },
-            {
-                model: AssetInspectionItem, as: 'items',
-                include: [{ model: Asset, as: 'asset', include: [{ model: AssetType, as: 'asset_type', attributes: ['id', 'name'] }] }]
-            }
-        ]
-    });
+    const inspections = await inspectionRepository.findInspectionsByRoom(roomId);
 
     const normalized = inspections.map((inspection) => inspection.toJSON());
 

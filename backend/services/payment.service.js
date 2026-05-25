@@ -2,6 +2,7 @@ const { sequelize } = require('../config/db');
 const getPayOS = require('../utils/payos');
 const payosConfig = require('../config/payos.config');
 const contractService = require('./contract.service');
+const paymentRepository = require('../repositories/payment.repository');
 const { parseUTCDate } = require('../utils/date.util');
 const { enqueueEmailJob } = require('./emailQueue.service');
 const { EMAIL_JOB_TYPES } = require('../constants/emailJobs');
@@ -75,11 +76,7 @@ const getPaymentTypeLabel = (paymentType) => {
 };
 
 const createBookingPaymentUrlPayOS = async (userId, booking_id) => {
-    const { Booking, Payment } = sequelize.models;
-
-    const booking = await Booking.findOne({
-        where: { id: booking_id, customer_id: userId, status: 'PENDING' }
-    });
+    const booking = await paymentRepository.findPendingBookingForDeposit(booking_id, userId);
 
     if (!booking) {
         throw new AppError("Không tìm thấy đơn đặt phòng hợp lệ hoặc đơn đã được xử lý", 404);
@@ -90,7 +87,7 @@ const createBookingPaymentUrlPayOS = async (userId, booking_id) => {
 
     try {
         return await sequelize.transaction(async (transaction) => {
-            const payment = await Payment.create({
+            const payment = await paymentRepository.createPayment({
                 payment_number: paymentNumber,
                 user_id: userId,
                 amount: booking.deposit_amount, // Always persist real amount in DB.
@@ -99,7 +96,7 @@ const createBookingPaymentUrlPayOS = async (userId, booking_id) => {
                 gateway_transaction_id: String(orderCode)
             }, { transaction });
 
-            await booking.update({ deposit_payment_id: payment.id }, { transaction });
+            await paymentRepository.updateBooking(booking, { deposit_payment_id: payment.id }, { transaction });
 
             // Expire payment link in 1 hour.
             const expiredAt = Math.floor(Date.now() / 1000) + 3600;
@@ -127,12 +124,7 @@ const createBookingPaymentUrlPayOS = async (userId, booking_id) => {
 };
 
 const createInvoicePaymentUrlPayOS = async (userId, invoice_id) => {
-    const { Invoice, Payment, Contract } = sequelize.models;
-
-    const invoice = await Invoice.findOne({
-        where: { id: invoice_id, status: 'UNPAID' },
-        include: [{ model: Contract, as: 'contract', where: { customer_id: userId } }]
-    });
+    const invoice = await paymentRepository.findUnpaidInvoiceForUser(invoice_id, userId);
 
     if (!invoice) {
         throw new AppError("Không tìm thấy hóa đơn cần thanh toán", 404);
@@ -144,7 +136,7 @@ const createInvoicePaymentUrlPayOS = async (userId, invoice_id) => {
 
     try {
         return await sequelize.transaction(async (transaction) => {
-            await Payment.create({
+            await paymentRepository.createPayment({
                 payment_number: paymentNumber,
                 invoice_id: invoice.id,
                 contract_id: invoice.contract_id,
@@ -184,37 +176,28 @@ const createInvoicePaymentUrlPayOS = async (userId, invoice_id) => {
  * Shared business flow after successful PayOS payment.
  */
 const processSuccessPayment = async (payment, gatewayResponse) => {
-    const { Booking, Invoice, Contract, User, Room, Building } = sequelize.models;
     const transaction = await sequelize.transaction();
     let depositPaidBookingId = null;
     let paymentReceiptEmail = null;
     let welcomeCheckInEmail = null;
 
     try {
-        await payment.update({
+        await paymentRepository.updatePayment(payment, {
             status: 'SUCCESS',
             paid_at: new Date(),
             gateway_response: gatewayResponse
         }, { transaction });
 
         if (payment.payment_type === 'DEPOSIT') {
-            const booking = await Booking.findOne({
-                where: { deposit_payment_id: payment.id },
-                include: [{
-                    model: Room,
-                    as: 'room',
-                    include: [{ model: Building, as: 'building' }]
-                }],
-                transaction
-            });
+            const booking = await paymentRepository.findBookingByDepositPaymentId(payment.id, { transaction });
             if (booking) {
-                await booking.update({
+                await paymentRepository.updateBooking(booking, {
                     status: 'DEPOSIT_PAID',
                     deposit_paid_at: new Date()
                 }, { transaction });
                 depositPaidBookingId = booking.id;
 
-                const customer = await User.findByPk(booking.customer_id, { transaction });
+                const customer = await paymentRepository.findUserById(booking.customer_id, { transaction });
                 if (customer?.email) {
                     const customerName = `${customer.last_name || ''} ${customer.first_name || ''}`.trim();
                     paymentReceiptEmail = {
@@ -236,23 +219,16 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
             || payment.payment_type === 'REQUEST'
             || payment.payment_type === 'SERVICE'
         ) {
-            const invoice = await Invoice.findByPk(payment.invoice_id, { transaction });
+            const invoice = await paymentRepository.findInvoiceById(payment.invoice_id, { transaction });
             if (invoice) {
-                await invoice.update({
+                await paymentRepository.updateInvoice(invoice, {
                     status: 'PAID',
                     paid_at: new Date()
                 }, { transaction });
 
-                const contract = await Contract.findByPk(invoice.contract_id, {
-                    include: [{
-                        model: Room,
-                        as: 'room',
-                        include: [{ model: Building, as: 'building' }]
-                    }],
-                    transaction
-                });
+                const contract = await paymentRepository.findContractWithRoomById(invoice.contract_id, { transaction });
                 const customer = contract
-                    ? await User.findByPk(contract.customer_id, { transaction })
+                    ? await paymentRepository.findUserById(contract.customer_id, { transaction })
                     : null;
 
                 if (customer?.email) {
@@ -274,19 +250,19 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
                 if (contract && contract.status === 'PENDING_FIRST_PAYMENT') {
                     if (invoice.billing_period_start === contract.start_date) {
                         if (contract.renewed_from_contract_id) {
-                            await contract.update({ status: 'ACTIVE' }, { transaction });
+                            await paymentRepository.updateContract(contract, { status: 'ACTIVE' }, { transaction });
 
-                            const oldContract = await Contract.findByPk(
+                            const oldContract = await paymentRepository.findContractById(
                                 contract.renewed_from_contract_id, { transaction }
                             );
                             if (oldContract && ['ACTIVE', 'EXPIRING_SOON', 'FINISHED'].includes(oldContract.status)) {
-                                await oldContract.update({ status: 'FINISHED' }, { transaction });
+                                await paymentRepository.updateContract(oldContract, { status: 'FINISHED' }, { transaction });
                             }
                         } else {
-                            await contract.update({ status: 'PENDING_CHECK_IN' }, { transaction });
+                            await paymentRepository.updateContract(contract, { status: 'PENDING_CHECK_IN' }, { transaction });
 
                             if (customer && customer.role === 'CUSTOMER') {
-                                await customer.update({
+                                await paymentRepository.updateUser(customer, {
                                     role: 'RESIDENT',
                                     building_id: contract.room?.building?.id || contract.room?.building_id
                                 }, { transaction });
@@ -341,8 +317,6 @@ const processSuccessPayment = async (payment, gatewayResponse) => {
 };
 
 const payosWebhook = async (body) => {
-    const { Payment } = sequelize.models;
-
     // Verify webhook signature.
     let webhookData;
     try {
@@ -358,9 +332,7 @@ const payosWebhook = async (body) => {
     console.log(`[PayOS Webhook] orderCode=${orderCode}, amount=${amount}, code=${code}, success=${isSuccess}`);
 
     // Find payment by orderCode.
-    const payment = await Payment.findOne({
-        where: { gateway_transaction_id: String(orderCode) }
-    });
+    const payment = await paymentRepository.findPaymentByGatewayTransactionId(orderCode);
 
     if (!payment) {
         console.error(`[PayOS Webhook] Payment not found for orderCode: ${orderCode}`);
@@ -382,7 +354,7 @@ const payosWebhook = async (body) => {
 
     // Mark failed payment.
     if (!isSuccess) {
-        await payment.update({
+        await paymentRepository.updatePayment(payment, {
             status: 'FAILED',
             gateway_response: body
         });
@@ -400,8 +372,13 @@ const payosWebhook = async (body) => {
     return { success: true };
 };
 
+const getMyPayments = async (userId) => {
+    return paymentRepository.findPaymentsByUserId(userId);
+};
+
 module.exports = {
     createBookingPaymentUrlPayOS,
     createInvoicePaymentUrlPayOS,
-    payosWebhook
+    payosWebhook,
+    getMyPayments
 };

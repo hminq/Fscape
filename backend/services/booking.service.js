@@ -1,6 +1,6 @@
 const { sequelize } = require("../config/db");
-const { Op } = require("sequelize");
 const AppError = require('../utils/AppError');
+const bookingRepository = require("../repositories/booking.repository");
 const {
   DEPOSIT_MONTHS,
   MIN_CHECKIN_DAYS,
@@ -16,7 +16,6 @@ const { generateNumberedId } = require("../utils/generateId");
 const { parseUTCDate } = require("../utils/date.util");
 
 const createBooking = async (userId, bookingData) => {
-  const { Booking, Room, RoomType, User, CustomerProfile } = sequelize.models;
   const {
     room_id,
     check_in_date,
@@ -53,8 +52,7 @@ const createBooking = async (userId, bookingData) => {
 
   try {
     // 1) Lock room row first.
-    const room = await Room.findByPk(room_id, {
-      include: [{ model: RoomType, as: "room_type", required: true }],
+    const room = await bookingRepository.findRoomForBooking(room_id, {
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
@@ -68,27 +66,28 @@ const createBooking = async (userId, bookingData) => {
     }
 
     // 2) Fetch room type.
-    const roomType = await RoomType.findByPk(room.room_type_id, {
+    const roomType = await bookingRepository.findRoomTypeById(room.room_type_id, {
       transaction,
     });
     const basePrice = Number(roomType?.base_price || 0);
     const depositAmount = basePrice * DEPOSIT_MONTHS;
 
     // 3) Upsert customer profile details.
-    const [profile, created] = await CustomerProfile.findOrCreate({
-      where: { user_id: userId },
-      defaults: {
+    const [profile, created] = await bookingRepository.findOrCreateCustomerProfile(
+      userId,
+      {
         gender: customer_info?.gender?.toUpperCase(),
         date_of_birth: customer_info?.date_of_birth,
         permanent_address: customer_info?.permanent_address,
         emergency_contact_name: customer_info?.emergency_contact_name,
         emergency_contact_phone: customer_info?.emergency_contact_phone,
       },
-      transaction,
-    });
+      { transaction },
+    );
 
     if (!created && customer_info) {
-      await profile.update(
+      await bookingRepository.updateCustomerProfile(
+        profile,
         {
           gender: customer_info.gender?.toUpperCase() || profile.gender,
           date_of_birth: customer_info.date_of_birth || profile.date_of_birth,
@@ -105,7 +104,7 @@ const createBooking = async (userId, bookingData) => {
     }
 
     // 4) Create booking in PENDING status.
-    booking = await Booking.create(
+    booking = await bookingRepository.createPendingBooking(
       {
         booking_number: generateNumberedId("BK"),
         room_id,
@@ -122,7 +121,7 @@ const createBooking = async (userId, bookingData) => {
     );
 
     // 5) Reserve room by setting LOCKED status.
-    await room.update({ status: "LOCKED" }, { transaction });
+    await bookingRepository.updateRoomInstanceStatus(room, "LOCKED", { transaction });
 
     await transaction.commit();
   } catch (error) {
@@ -134,89 +133,12 @@ const createBooking = async (userId, bookingData) => {
 };
 
 const getMyBookings = async (userId, query = {}) => {
-  const { Booking, Room, Building, RoomType, Contract } = sequelize.models;
-
   const {
     page = 1,
     limit = 10,
-    sort_by = 'created_at',
-    sort_order = 'DESC',
-    status,
-    search,
   } = query;
 
-  const offset = (page - 1) * limit;
-  const where = { customer_id: userId };
-
-  // Status filter
-  if (status === 'active') {
-    where.status = { [Op.in]: ['PENDING', 'DEPOSIT_PAID'] };
-  } else if (status && status !== 'all') {
-    where.status = status;
-  }
-
-  // Search by booking_number
-  if (search) {
-    where.booking_number = { [Op.iLike]: `%${search}%` };
-  }
-
-  // Allowed sort columns
-  const sortColumnMap = {
-    created_at: 'createdAt',
-    check_in_date: 'check_in_date',
-    room_price_snapshot: 'room_price_snapshot',
-    status: 'status',
-  };
-  const sortCol = sortColumnMap[sort_by] || 'createdAt';
-  const sortDir = sort_order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-
-  const { count, rows } = await Booking.findAndCountAll({
-    where,
-    attributes: [
-      "id",
-      "booking_number",
-      "status",
-      "check_in_date",
-      "duration_months",
-      "room_price_snapshot",
-      "deposit_amount",
-      "deposit_paid_at",
-      "expires_at",
-      "cancelled_at",
-      "cancellation_reason",
-      "contract_id",
-      "createdAt",
-    ],
-    include: [
-      {
-        model: Room,
-        as: "room",
-        attributes: ["id", "room_number", "floor", "thumbnail_url"],
-        include: [
-          {
-            model: Building,
-            as: "building",
-            attributes: ["id", "name", "address"],
-          },
-          {
-            model: RoomType,
-            as: "room_type",
-            attributes: ["id", "name", "area_sqm", "bedrooms", "bathrooms"],
-          },
-        ],
-      },
-      {
-        model: Contract,
-        as: "contract",
-        attributes: ["id", "status"],
-        required: false,
-      },
-    ],
-    distinct: true,
-    limit: Number(limit),
-    offset: Number(offset),
-    order: [[sortCol, sortDir]],
-  });
+  const { count, rows } = await bookingRepository.findMyBookings(userId, query);
 
   return {
     total: count,
@@ -228,27 +150,7 @@ const getMyBookings = async (userId, query = {}) => {
 };
 
 const getBookingById = async (id, caller) => {
-  const { Booking, Room, Building, RoomType, User, CustomerProfile } = sequelize.models;
-  const booking = await Booking.findByPk(id, {
-    include: [
-      {
-        model: Room,
-        as: "room",
-        include: [
-          { model: Building, as: "building" },
-          { model: RoomType, as: "room_type" },
-        ],
-      },
-      {
-        model: User,
-        as: "customer",
-        attributes: ['id', 'first_name', 'last_name', 'email', 'phone', 'avatar_url'],
-        include: [
-          { model: CustomerProfile, as: 'profile', attributes: ['gender', 'date_of_birth', 'permanent_address'] },
-        ],
-      },
-    ],
-  });
+  const booking = await bookingRepository.findByIdWithDetails(id);
 
   if (!booking) throw new AppError("Không tìm thấy đơn đặt phòng.", 404);
 
@@ -266,102 +168,12 @@ const getBookingById = async (id, caller) => {
   return booking;
 };
 const getAllBookings = async (filters = {}, caller = {}) => {
-    const { Booking, Room, Building, RoomType, User, CustomerProfile } = sequelize.models;
-    
-    // Pagination
     const page = parseInt(filters.page) || 1;
     const limit = parseInt(filters.limit) || 10;
-    const offset = (page - 1) * limit;
-    
-    // Build where clause
-    const where = {};
-    if (filters.status) {
-        where.status = filters.status;
-    }
-    if (filters.booking_number) {
-        where.booking_number = { [Op.iLike]: `%${filters.booking_number}%` };
-    }
-    if (filters.search) {
-        where[Op.or] = [
-            { booking_number: { [Op.iLike]: `%${filters.search}%` } },
-            { '$customer.first_name$': { [Op.iLike]: `%${filters.search}%` } },
-            { '$customer.last_name$': { [Op.iLike]: `%${filters.search}%` } },
-            { '$room.room_number$': { [Op.iLike]: `%${filters.search}%` } }
-        ];
-    }
-    
-    // Build includes with nested where for related models
-    const buildingWhere = caller.role === 'BUILDING_MANAGER'
-        ? { id: caller.building_id }
-        : filters.building_id
-            ? { id: filters.building_id }
-            : (filters.building_name ? { name: { [Op.iLike]: `%${filters.building_name}%` } } : undefined);
-
-    const include = [
-        {
-            model: Room,
-            as: 'room',
-            attributes: ['id', 'room_number', 'floor', 'thumbnail_url'],
-            where: filters.room_number ? { room_number: { [Op.iLike]: `%${filters.room_number}%` } } : undefined,
-            include: [
-                {
-                    model: Building,
-                    as: 'building',
-                    attributes: ['id', 'name', 'address'],
-                    where: buildingWhere,
-                },
-                {
-                    model: RoomType,
-                    as: 'room_type',
-                    attributes: ['id', 'name', 'area_sqm', 'bedrooms', 'bathrooms']
-                }
-            ]
-        },
-        {
-            model: User,
-            as: 'customer',
-            attributes: ['id', 'first_name', 'last_name', 'email', 'phone'],
-            where: filters.customer_name ? {
-                [Op.or]: [
-                    { first_name: { [Op.iLike]: `%${filters.customer_name}%` } },
-                    { last_name: { [Op.iLike]: `%${filters.customer_name}%` } },
-                    { email: { [Op.iLike]: `%${filters.customer_name}%` } }
-                ]
-            } : undefined,
-            include: [
-                {
-                    model: CustomerProfile,
-                    as: 'profile',
-                    attributes: ['gender', 'date_of_birth', 'permanent_address']
-                }
-            ]
-        }
-    ];
-    
-    // Remove undefined where clauses
-    include.forEach(inc => {
-        if (inc.where === undefined) delete inc.where;
-        if (inc.include) {
-            inc.include.forEach(nested => {
-                if (nested.where === undefined) delete nested.where;
-            });
-        }
-    });
-    
-    const { count, rows } = await Booking.findAndCountAll({
-        attributes: [
-            'id', 'booking_number', 'status', 'check_in_date', 'duration_months',
-            'room_price_snapshot', 'deposit_amount', 'deposit_paid_at',
-            'expires_at', 'cancelled_at', 'cancellation_reason', 'createdAt'
-        ],
-        include,
-        where,
-        order: [['createdAt', 'DESC']],
-        limit,
-        offset,
-        distinct: true,
-        subQuery: false, // Required when filtering by associated models with limit
-    });
+    const repositoryOptions = {
+        buildingId: caller.role === 'BUILDING_MANAGER' ? caller.building_id : undefined,
+    };
+    const { count, rows } = await bookingRepository.findAllWithFilters(filters, repositoryOptions);
     
     return {
         data: rows,
@@ -377,22 +189,18 @@ const getAllBookings = async (filters = {}, caller = {}) => {
 };
 
 const cancelBookingForPaymentFailure = async (bookingId) => {
-  const { Booking, Room } = sequelize.models;
-
   const transaction = await sequelize.transaction();
 
   try {
-    const booking = await Booking.findByPk(bookingId, {
-      transaction,
-      lock: transaction.LOCK.UPDATE,
-    });
+    const booking = await bookingRepository.findByIdForUpdate(bookingId, transaction);
 
     if (!booking || booking.status !== "PENDING") {
       await transaction.rollback();
       return false;
     }
 
-    await booking.update(
+    await bookingRepository.updateBooking(
+      booking,
       {
         status: "CANCELLED",
         cancelled_at: new Date(),
@@ -401,10 +209,7 @@ const cancelBookingForPaymentFailure = async (bookingId) => {
       { transaction },
     );
 
-    await Room.update(
-      { status: "AVAILABLE" },
-      { where: { id: booking.room_id }, transaction },
-    );
+    await bookingRepository.updateRoomStatus(booking.room_id, "AVAILABLE", { transaction });
 
     await transaction.commit();
     return true;

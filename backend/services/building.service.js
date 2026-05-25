@@ -1,16 +1,6 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
-const Building = require('../models/building.model');
-const Location = require('../models/location.model');
-const BuildingImage = require('../models/buildingImage.model');
-const Facility = require('../models/facility.model');
-const BuildingFacility = require('../models/buildingFacility.model');
-const University = require('../models/university.model');
-const Room = require('../models/room.model');
-const RoomType = require('../models/roomType.model');
-const User = require('../models/user.model');
-const Contract = require('../models/contract.model');
-const Booking = require('../models/booking.model');
+const buildingRepository = require('../repositories/building.repository');
 const { ROLES } = require('../constants/roles');
 
 const AppError = require('../utils/AppError');
@@ -51,18 +41,13 @@ const getAllBuildings = async ({ page = 1, limit = 10, location_id, search, is_a
     if (is_active !== undefined) where.is_active = is_active === 'true';
     if (search) where.name = { [Op.iLike]: `%${search}%` };
 
-    const { count, rows } = await Building.findAndCountAll({
+    const { count, rows } = await buildingRepository.findAndCountBuildings({
         where,
         attributes,
-        include: [
-            { model: Location, as: 'location', attributes: locationAttributes },
-            { model: BuildingImage, as: 'images', attributes: ['id', 'image_url'] },
-            { model: Facility, as: 'facilities', through: { attributes: facilityThroughAttributes } }
-        ],
+        locationAttributes,
+        facilityThroughAttributes,
         limit: Number(limit),
         offset: Number(offset),
-        distinct: true,
-        order: [['createdAt', 'DESC']]
     });
 
     // Strip createdAt from public response (it was only kept for ORDER BY)
@@ -101,36 +86,25 @@ const getBuildingById = async (id, user) => {
         facilityThroughAttributes = [];
     }
 
-    const building = await Building.findByPk(id, {
+    const building = await buildingRepository.findBuildingDetailById({
+        id,
         attributes,
-        include: [
-            { model: Location, as: 'location', attributes: locationAttributes },
-            { model: BuildingImage, as: 'images', attributes: ['id', 'image_url'] },
-            { model: Facility, as: 'facilities', through: { attributes: facilityThroughAttributes } },
-            { model: User, as: 'manager', attributes: ['id', 'email', 'first_name', 'last_name', 'phone', 'avatar_url', 'is_active'], where: { role: 'BUILDING_MANAGER' }, required: false }
-        ]
+        locationAttributes,
+        facilityThroughAttributes,
     });
 
     if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
-    const rooms = await Room.findAll({
-        where: { building_id: id },
-        order: [['floor', 'ASC'], ['room_number', 'ASC']]
-    });
+    const rooms = await buildingRepository.findRoomsByBuilding(id);
 
     const uniqueRoomTypeIds = [...new Set(rooms.map(room => room.room_type_id))];
 
     let roomTypes = [];
     if (uniqueRoomTypeIds.length > 0) {
-        roomTypes = await RoomType.findAll({
-            where: { id: uniqueRoomTypeIds }
-        });
+        roomTypes = await buildingRepository.findRoomTypesByIds(uniqueRoomTypeIds);
     }
 
-    const nearbyUniversities = await University.findAll({
-        where: { location_id: building.location_id, is_active: true },
-        attributes: ['id', 'name', 'address', 'latitude', 'longitude']
-    });
+    const nearbyUniversities = await buildingRepository.findActiveUniversitiesByLocation(building.location_id);
 
     const buildingData = building.toJSON();
     buildingData.nearby_universities = nearbyUniversities;
@@ -158,19 +132,14 @@ const createBuilding = async (data) => {
 
     // Check for duplicate building name (trim and ignore case)
     const normalizedName = buildingData.name.trim();
-    const existing = await Building.findOne({
-        where: sequelize.where(
-            sequelize.fn('LOWER', sequelize.col('name')),
-            normalizedName.toLowerCase()
-        )
-    });
+    const existing = await buildingRepository.findBuildingByNameInsensitive(normalizedName);
     if (existing) {
         throw new AppError(`Tòa nhà "${normalizedName}" đã tồn tại`, 409);
     }
 
     // Validate manager if provided
     if (manager_id) {
-        const manager = await User.findByPk(manager_id);
+        const manager = await buildingRepository.findUserById(manager_id);
         if (!manager) throw new AppError('Không tìm thấy quản lý', 404);
         if (manager.role !== 'BUILDING_MANAGER') throw new AppError('Người dùng được chọn không phải quản lý tòa nhà', 400);
         if (!manager.is_active) throw new AppError('Quản lý được chọn đã bị vô hiệu hóa', 400);
@@ -180,20 +149,20 @@ const createBuilding = async (data) => {
     const transaction = await sequelize.transaction();
 
     try {
-        const building = await Building.create(buildingData, { transaction });
+        const building = await buildingRepository.createBuilding(buildingData, { transaction });
 
         if (images && images.length > 0) {
             const imageRecords = images.map(url => ({ building_id: building.id, image_url: url }));
-            await BuildingImage.bulkCreate(imageRecords, { transaction });
+            await buildingRepository.bulkCreateBuildingImages(imageRecords, { transaction });
         }
 
         if (facilities && facilities.length > 0) {
             const facilityRecords = facilities.map(fId => ({ building_id: building.id, facility_id: fId }));
-            await BuildingFacility.bulkCreate(facilityRecords, { transaction });
+            await buildingRepository.bulkCreateBuildingFacilities(facilityRecords, { transaction });
         }
 
         if (manager_id) {
-            await User.update({ building_id: building.id }, { where: { id: manager_id }, transaction });
+            await buildingRepository.updateUsersByWhere({ building_id: building.id }, { id: manager_id }, { transaction });
         }
 
         await transaction.commit();
@@ -220,40 +189,30 @@ const updateBuilding = async (id, data) => {
         throw new AppError('Số tầng phải từ 1 đến 99', 400);
     }
 
-    const building = await Building.findByPk(id);
+    const building = await buildingRepository.findBuildingById(id);
     if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     // Check for duplicate name if renaming (trim and ignore case)
     if (updateData.name && updateData.name.trim() !== building.name) {
         const normalizedName = updateData.name.trim();
-        const duplicate = await Building.findOne({
-            where: {
-                [Op.and]: [
-                    sequelize.where(
-                        sequelize.fn('LOWER', sequelize.col('name')),
-                        normalizedName.toLowerCase()
-                    ),
-                    { id: { [Op.ne]: id } }
-                ]
-            }
-        });
+        const duplicate = await buildingRepository.findBuildingDuplicateByName(normalizedName, id);
         if (duplicate) throw new AppError('Tên tòa nhà đã tồn tại', 409);
     }
 
     const transaction = await sequelize.transaction();
     try {
-        await building.update(updateData, { transaction });
+        await buildingRepository.updateBuilding(building, updateData, { transaction });
 
         // Sync Images
         if (images) {
-            await BuildingImage.destroy({ where: { building_id: id }, transaction });
-            await BuildingImage.bulkCreate(images.map(url => ({ building_id: id, image_url: url })), { transaction });
+            await buildingRepository.deleteBuildingImages(id, { transaction });
+            await buildingRepository.bulkCreateBuildingImages(images.map(url => ({ building_id: id, image_url: url })), { transaction });
         }
 
         // Sync Facilities
         if (facilities) {
-            await BuildingFacility.destroy({ where: { building_id: id }, transaction });
-            await BuildingFacility.bulkCreate(facilities.map(fId => ({ building_id: id, facility_id: fId })), { transaction });
+            await buildingRepository.deleteBuildingFacilities(id, { transaction });
+            await buildingRepository.bulkCreateBuildingFacilities(facilities.map(fId => ({ building_id: id, facility_id: fId })), { transaction });
         }
 
         await transaction.commit();
@@ -265,24 +224,24 @@ const updateBuilding = async (id, data) => {
 };
 
 const deleteBuilding = async (id) => {
-    const building = await Building.findByPk(id);
+    const building = await buildingRepository.findBuildingById(id);
     if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
     // Prevent deletion if the building has existing rooms associated with it
-    const roomsCount = await Room.count({ where: { building_id: id } });
+    const roomsCount = await buildingRepository.countRoomsByBuilding(id);
     if (roomsCount > 0) {
         throw new AppError(`Không thể xóa tòa nhà vì đang chứa ${roomsCount} phòng. Vui lòng xóa các phòng trước.`, 400);
     }
 
     // Unassign manager/staff before deletion to avoid FK constraint violation
-    await User.update({ building_id: null }, { where: { building_id: id } });
+    await buildingRepository.updateUsersByWhere({ building_id: null }, { building_id: id });
 
-    await building.destroy();
+    await buildingRepository.destroyBuilding(building);
     return { message: `Đã xóa tòa nhà "${building.name}" thành công` };
 };
 
 const toggleBuildingStatus = async (id, isActive, user) => {
-    const building = await Building.findByPk(id)
+    const building = await buildingRepository.findBuildingById(id)
     if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
     if (user && user.role === 'BUILDING_MANAGER' && user.building_id !== building.id) {
         throw new AppError('Bạn chỉ được quản lý tòa nhà được phân công', 403);
@@ -294,23 +253,15 @@ const toggleBuildingStatus = async (id, isActive, user) => {
 
     // Block disabling if building has active contracts or bookings
     if (!isActive) {
-        const roomIds = (await Room.findAll({
-            where: { building_id: id },
-            attributes: ['id'],
-            raw: true
-        })).map(r => r.id);
+        const roomIds = (await buildingRepository.findRoomIdsByBuilding(id)).map(r => r.id);
 
         if (roomIds.length > 0) {
-            const activeContracts = await Contract.count({
-                where: { room_id: { [Op.in]: roomIds }, status: { [Op.in]: ACTIVE_CONTRACT_STATUSES } }
-            });
+            const activeContracts = await buildingRepository.countActiveContractsByRoomIds(roomIds, ACTIVE_CONTRACT_STATUSES);
             if (activeContracts > 0) {
                 throw new AppError(`Không thể vô hiệu hóa tòa nhà. Hiện có ${activeContracts} hợp đồng đang hoạt động.`, 409);
             }
 
-            const activeBookings = await Booking.count({
-                where: { room_id: { [Op.in]: roomIds }, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } }
-            });
+            const activeBookings = await buildingRepository.countActiveBookingsByRoomIds(roomIds, ACTIVE_BOOKING_STATUSES);
             if (activeBookings > 0) {
                 throw new AppError(`Không thể vô hiệu hóa tòa nhà. Hiện có ${activeBookings} đặt phòng đang chờ xử lý.`, 409);
             }
@@ -318,38 +269,17 @@ const toggleBuildingStatus = async (id, isActive, user) => {
     }
 
     building.is_active = isActive
-    await building.save()
+    await buildingRepository.saveBuilding(building)
 
     return building
 }
 
 const getStaffsByBuilding = async (buildingId) => {
-  return await User.findAll({
-    where: {
-      building_id: buildingId,
-      role: ROLES.STAFF,
-      is_active: true
-    },
-    attributes: [
-      "id",
-      "email",
-      "first_name",
-      "last_name",
-      "phone",
-      "avatar_url",
-      "is_active"
-    ],
-    order: [["createdAt", "DESC"]]
-  });
+  return buildingRepository.findActiveStaffByBuilding(buildingId);
 };
 
 const getBuildingStats = async () => {
-    const buildings = await Building.findAll({
-        attributes: ['location_id', 'is_active'],
-        include: [{ model: Location, as: 'location', attributes: ['id', 'name'] }],
-        raw: true,
-        nest: true,
-    });
+    const buildings = await buildingRepository.findBuildingsForStats();
 
     let active = 0;
     let inactive = 0;

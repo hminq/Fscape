@@ -1,16 +1,6 @@
 const { Op } = require('sequelize');
 const { sequelize } = require('../config/db');
-const Room = require('../models/room.model');
-const RoomImage = require('../models/roomImage.model');
-const Building = require('../models/building.model');
-const RoomType = require('../models/roomType.model');
-const RoomTypeAsset = require('../models/roomTypeAsset.model');
-const AssetType = require('../models/assetType.model');
-const Booking = require('../models/booking.model');
-const Contract = require('../models/contract.model');
-const Request = require('../models/request.model');
-const User = require('../models/user.model');
-const Asset = require('../models/asset.model');
+const roomRepository = require('../repositories/room.repository');
 
 const AppError = require('../utils/AppError');
 const { ROLES } = require('../constants/roles');
@@ -71,35 +61,22 @@ const getAllRooms = async (query = {}, user = {}) => {
   const {
     page = 1,
     limit = 10,
-    capacity,
     sort_by = 'created_at',
     sort_order = 'DESC'
   } = query;
   const safePage = Math.max(Number(page) || 1, 1);
   const safeLimit = Math.max(Number(limit) || 10, 1);
   const offset = (safePage - 1) * safeLimit;
-  const allowedSorts = {
-    created_at: ['createdAt'],
-    price: [{ model: RoomType, as: 'room_type' }, 'base_price'],
-  };
-  const sortPath = allowedSorts[sort_by] || allowedSorts.created_at;
   const sortDir = String(sort_order).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
   const { where, roomTypeWhere } = buildRoomListFilters(query, user);
 
-  const { count, rows } = await Room.findAndCountAll({
+  const { count, rows } = await roomRepository.findAndCountRooms({
     where,
-    include: [
-      { model: Building, as: 'building', attributes: ['id', 'name'] },
-      {
-        model: RoomType,
-        as: 'room_type',
-        attributes: ['id', 'name', 'base_price', 'capacity_min', 'capacity_max', 'area_sqm', 'bedrooms', 'bathrooms'],
-        where: roomTypeWhere,
-      }
-    ],
+    roomTypeWhere,
     limit: safeLimit,
     offset: Number(offset),
-    order: [[...sortPath, sortDir]]
+    sortBy: sort_by,
+    sortDir,
   });
 
   let data = rows;
@@ -129,18 +106,9 @@ const getRoomFacets = async (query = {}, user = {}) => {
 
   const { where, roomTypeWhere } = buildRoomListFilters(facetQuery, user);
 
-  const rows = await Room.findAll({
+  const rows = await roomRepository.findRoomsForFacets({
     where,
-    attributes: ['id', 'room_type_id'],
-    include: [
-      {
-        model: RoomType,
-        as: 'room_type',
-        attributes: ['id', 'name'],
-        where: roomTypeWhere,
-      }
-    ],
-    raw: false,
+    roomTypeWhere,
   });
 
   const roomTypeMap = new Map();
@@ -167,29 +135,7 @@ const getRoomFacets = async (query = {}, user = {}) => {
 const getRoomById = async (id, user = {}) => {
   const role = user.role || 'PUBLIC';
 
-
-  const room = await Room.findByPk(id, {
-    include: [
-      { model: Building, as: 'building' },
-      {
-        model: RoomType,
-        as: 'room_type',
-        include: [{
-          model: RoomTypeAsset,
-          as: 'template_assets',
-          attributes: ['id', 'quantity'],
-          include: [{
-            model: AssetType,
-            as: 'asset_type',
-            attributes: ['id', 'name'],
-            where: { is_active: true },
-            required: false
-          }]
-        }]
-      },
-      { model: RoomImage, as: 'images', attributes: ['id', 'image_url'] }
-    ]
-  });
+  const room = await roomRepository.findRoomDetailById(id);
 
   if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
@@ -206,10 +152,7 @@ const getRoomById = async (id, user = {}) => {
   // Fetch additional data based on role.
   if (role === ROLES.ADMIN || role === ROLES.BUILDING_MANAGER || role === ROLES.STAFF) {
     // 1. Find the current resident (user with an ACTIVE contract on this room)
-    const activeContract = await Contract.findOne({
-      where: { room_id: id, status: { [Op.in]: ['PENDING_FIRST_PAYMENT', 'PENDING_CHECK_IN', 'ACTIVE', 'EXPIRING_SOON'] } },
-      include: [{ model: User, as: 'customer', attributes: ['id', 'first_name', 'last_name', 'email', 'phone', 'avatar_url'] }]
-    });
+    const activeContract = await roomRepository.findActiveContractForRoom(id);
 
     if (activeContract && activeContract.customer) {
       const resident = activeContract.customer;
@@ -217,26 +160,13 @@ const getRoomById = async (id, user = {}) => {
 
       // 2. Fetch all requests made by this resident for this room
       if (role === ROLES.ADMIN || role === ROLES.STAFF) {
-        data.resident_requests = await Request.findAll({
-          where: { room_id: id, resident_id: resident.id },
-          attributes: ['id', 'request_number', 'title', 'status', 'request_type', 'created_at'],
-          order: [['createdAt', 'DESC']]
-        });
+        data.resident_requests = await roomRepository.findResidentRequestsForRoom(id, resident.id);
       }
 
       // 3. Fetch all bookings and contracts made by this resident for this room
       if (role === ROLES.ADMIN || role === ROLES.BUILDING_MANAGER) {
-        data.resident_bookings = await Booking.findAll({
-          where: { room_id: id, customer_id: resident.id },
-          attributes: ['id', 'booking_number', 'status', 'check_in_date', 'expires_at'],
-          order: [['createdAt', 'DESC']]
-        });
-
-        data.resident_contracts = await Contract.findAll({
-          where: { room_id: id, customer_id: resident.id },
-          attributes: ['id', 'contract_number', 'status', 'start_date', 'end_date', 'base_rent', 'term_type'],
-          order: [['createdAt', 'DESC']]
-        });
+        data.resident_bookings = await roomRepository.findResidentBookingsForRoom(id, resident.id);
+        data.resident_contracts = await roomRepository.findResidentContractsForRoom(id, resident.id);
       }
     } else {
       data.current_resident = null;
@@ -278,35 +208,27 @@ const getRoomById = async (id, user = {}) => {
 const createRoom = async (data) => {
   const { gallery_images, ...roomData } = data;
 
-  const existingRoom = await Room.findOne({
-    where: { building_id: roomData.building_id, room_number: roomData.room_number }
-  });
+  const existingRoom = await roomRepository.findRoomByBuildingAndNumber(roomData.building_id, roomData.room_number);
   if (existingRoom) {
     throw new AppError(`Số phòng ${roomData.room_number} đã tồn tại trong tòa nhà này`, 409);
   }
 
   const transaction = await sequelize.transaction();
   try {
-    const room = await Room.create(roomData, { transaction });
+    const room = await roomRepository.createRoom(roomData, { transaction });
 
     if (gallery_images && gallery_images.length > 0) {
       const imageRecords = gallery_images.map(url => ({
         room_id: room.id,
         image_url: url
       }));
-      await RoomImage.bulkCreate(imageRecords, { transaction });
+      await roomRepository.bulkCreateRoomImages(imageRecords, { transaction });
     }
 
     await transaction.commit();
 
     // Fetch the created room with minimal required relations
-    const createdRoom = await Room.findByPk(room.id, {
-      include: [
-        { model: Building, as: 'building' },
-        { model: RoomType, as: 'room_type' },
-        { model: RoomImage, as: 'images', attributes: ['image_url'] }
-      ]
-    });
+    const createdRoom = await roomRepository.findCreatedRoomById(room.id);
 
     const responseData = createdRoom.toJSON();
     if (responseData.images) {
@@ -324,31 +246,25 @@ const createRoom = async (data) => {
 const updateRoom = async (id, data) => {
   const { gallery_images, ...updateData } = data;
 
-  const room = await Room.findByPk(id);
+  const room = await roomRepository.findRoomById(id);
   if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
   // Guard against changing fundamental identity parameters if there are active bookings or contracts
   const hasCriticalChanges = updateData.building_id || updateData.room_type_id || updateData.room_number;
   if (hasCriticalChanges) {
-    const activeBooking = await Booking.findOne({
-      where: { room_id: id, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } }
-    });
+    const activeBooking = await roomRepository.findActiveBookingForRoom(id, ACTIVE_BOOKING_STATUSES);
     if (activeBooking) {
       throw new AppError('Không thể thay đổi tòa nhà, loại phòng hoặc số phòng khi phòng có đặt chỗ đang hoạt động', 409);
     }
 
-    const activeContract = await Contract.findOne({
-      where: { room_id: id, status: { [Op.in]: ACTIVE_CONTRACT_STATUSES } }
-    });
+    const activeContract = await roomRepository.findBlockingContractForRoom(id, ACTIVE_CONTRACT_STATUSES);
     if (activeContract) {
       throw new AppError('Không thể thay đổi tòa nhà, loại phòng hoặc số phòng khi phòng có hợp đồng đang hoạt động', 409);
     }
   }
 
   if (updateData.room_number && updateData.room_number !== room.room_number) {
-    const existingRoom = await Room.findOne({
-      where: { building_id: room.building_id, room_number: updateData.room_number }
-    });
+    const existingRoom = await roomRepository.findRoomByBuildingAndNumber(room.building_id, updateData.room_number);
     if (existingRoom) {
       throw new AppError(`Số phòng ${updateData.room_number} đã tồn tại trong tòa nhà này`, 409);
     }
@@ -356,16 +272,16 @@ const updateRoom = async (id, data) => {
 
   const transaction = await sequelize.transaction();
   try {
-    await room.update(updateData, { transaction });
+    await roomRepository.updateRoom(room, updateData, { transaction });
 
     if (gallery_images) {
-      await RoomImage.destroy({ where: { room_id: id }, transaction });
+      await roomRepository.deleteRoomImages(id, { transaction });
       if (gallery_images.length > 0) {
         const imageRecords = gallery_images.map(url => ({
           room_id: id,
           image_url: url
         }));
-        await RoomImage.bulkCreate(imageRecords, { transaction });
+        await roomRepository.bulkCreateRoomImages(imageRecords, { transaction });
       }
     }
 
@@ -379,26 +295,22 @@ const updateRoom = async (id, data) => {
 
 // DELETE /api/rooms/:id (soft delete)
 const deleteRoom = async (id) => {
-  const room = await Room.findByPk(id);
+  const room = await roomRepository.findRoomById(id);
   if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
   // Guard: cannot delete if active bookings exist
-  const activeBooking = await Booking.findOne({
-    where: { room_id: id, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } }
-  });
+  const activeBooking = await roomRepository.findActiveBookingForRoom(id, ACTIVE_BOOKING_STATUSES);
   if (activeBooking) {
     throw new AppError('Không thể xóa phòng có đặt chỗ đang hoạt động', 409);
   }
 
   // Guard: cannot delete if active contracts exist
-  const activeContract = await Contract.findOne({
-    where: { room_id: id, status: { [Op.in]: ACTIVE_CONTRACT_STATUSES } }
-  });
+  const activeContract = await roomRepository.findBlockingContractForRoom(id, ACTIVE_CONTRACT_STATUSES);
   if (activeContract) {
     throw new AppError('Không thể xóa phòng có hợp đồng đang hoạt động', 409);
   }
 
-  await room.destroy(); // paranoid: sets deleted_at
+  await roomRepository.destroyRoom(room); // paranoid: sets deleted_at
   return { message: `Đã xóa phòng ${room.room_number} thành công` };
 };
 
@@ -408,7 +320,7 @@ const toggleRoomStatus = async (id, targetStatus, user) => {
     throw new AppError('Trạng thái phòng không hợp lệ', 400);
   }
 
-  const room = await Room.findByPk(id);
+  const room = await roomRepository.findRoomById(id);
   if (!room) throw new AppError('Không tìm thấy phòng', 404);
 
   // Building-scoped: managers can only toggle rooms in their building
@@ -430,23 +342,19 @@ const toggleRoomStatus = async (id, targetStatus, user) => {
 
   // Guard: cannot lock if active bookings or contracts
   if (targetStatus === 'LOCKED') {
-    const activeBooking = await Booking.findOne({
-      where: { room_id: id, status: { [Op.in]: ACTIVE_BOOKING_STATUSES } }
-    });
+    const activeBooking = await roomRepository.findActiveBookingForRoom(id, ACTIVE_BOOKING_STATUSES);
     if (activeBooking) {
       throw new AppError('Không thể khóa phòng có đặt chỗ đang hoạt động', 409);
     }
 
-    const activeContract = await Contract.findOne({
-      where: { room_id: id, status: { [Op.in]: ACTIVE_CONTRACT_STATUSES } }
-    });
+    const activeContract = await roomRepository.findBlockingContractForRoom(id, ACTIVE_CONTRACT_STATUSES);
     if (activeContract) {
       throw new AppError('Không thể khóa phòng có hợp đồng đang hoạt động', 409);
     }
   }
 
   room.status = targetStatus;
-  await room.save();
+  await roomRepository.saveRoom(room);
   return room;
 };
 
@@ -470,32 +378,7 @@ const getRoomsByBuilding = async (building_id, query = {}, user = {}) => {
     throw new AppError('Bạn chỉ có thể xem phòng trong tòa nhà được phân công', 403);
   }
 
-  const rooms = await Room.findAll({
-    where,
-    include: [
-      {
-        model: RoomType,
-        as: 'room_type',
-        attributes: [
-          'id',
-          'name',
-          'base_price',
-          'capacity_min',
-          'capacity_max',
-          'area_sqm'
-        ]
-      },
-      {
-        model: RoomImage,
-        as: 'images',
-        attributes: ['image_url']
-      }
-    ],
-    order: [
-      ['floor', 'ASC'],
-      ['room_number', 'ASC']
-    ]
-  });
+  const rooms = await roomRepository.findRoomsByBuilding({ where });
 
   let data = rooms.map(r => r.toJSON());
 
@@ -521,38 +404,7 @@ const getRoomsByBuilding = async (building_id, query = {}, user = {}) => {
 // GET /api/rooms/my for CUSTOMER/RESIDENT.
 const getMyRooms = async (userId) => {
   // Find rooms where the user has an active contract
-  const contracts = await Contract.findAll({
-    where: {
-      customer_id: userId,
-      status: { [Op.in]: ['PENDING_CHECK_IN', 'ACTIVE', 'EXPIRING_SOON'] }
-    },
-    attributes: ['id', 'contract_number', 'status', 'start_date', 'end_date', 'base_rent'],
-    include: [{
-      model: Room,
-      as: 'room',
-      attributes: ['id', 'room_number', 'floor', 'thumbnail_url', 'status'],
-      include: [
-        {
-          model: Building,
-          as: 'building',
-          attributes: ['id', 'name', 'address', 'thumbnail_url']
-        },
-        {
-          model: RoomType,
-          as: 'room_type',
-          attributes: ['id', 'name', 'area_sqm', 'bedrooms', 'bathrooms', 'capacity_max']
-        },
-        {
-          model: Asset,
-          as: 'assets',
-          attributes: ['id', 'name', 'status', 'qr_code'],
-          where: { status: 'IN_USE' },
-          required: false
-        }
-      ]
-    }],
-    order: [['start_date', 'DESC']]
-  });
+  const contracts = await roomRepository.findMyRoomContracts(userId);
 
   return contracts;
 };
@@ -562,17 +414,13 @@ const createBatchRooms = async ({
   building_id, room_type_id, floor, count,
   thumbnail_url, image_3d_url, blueprint_url, gallery_images
 }) => {
-  const building = await Building.findByPk(building_id);
+  const building = await roomRepository.findBuildingById(building_id);
   if (!building) throw new AppError('Không tìm thấy tòa nhà', 404);
 
-  const roomType = await RoomType.findByPk(room_type_id);
+  const roomType = await roomRepository.findRoomTypeById(room_type_id);
   if (!roomType) throw new AppError('Không tìm thấy loại phòng', 404);
 
-  const existingRooms = await Room.findAll({
-    where: { building_id },
-    attributes: ['room_number'],
-    raw: true,
-  });
+  const existingRooms = await roomRepository.findRoomNumbersByBuilding(building_id);
   const existingNumbers = existingRooms.map(r => r.room_number);
 
   const roomNumbers = generateRoomNumbers(floor, count, existingNumbers);
@@ -590,13 +438,13 @@ const createBatchRooms = async ({
       blueprint_url: blueprint_url || null,
     }));
 
-    const created = await Room.bulkCreate(records, { transaction });
+    const created = await roomRepository.bulkCreateRooms(records, { transaction });
 
     if (gallery_images && gallery_images.length > 0) {
       const imageRecords = created.flatMap(room =>
         gallery_images.map(url => ({ room_id: room.id, image_url: url }))
       );
-      await RoomImage.bulkCreate(imageRecords, { transaction });
+      await roomRepository.bulkCreateRoomImages(imageRecords, { transaction });
     }
 
     await transaction.commit();
@@ -621,13 +469,7 @@ const getRoomStats = async (user) => {
     where.building_id = user.building_id;
   }
 
-  const rooms = await Room.findAll({
-    attributes: ['status', 'building_id'],
-    where,
-    include: [{ model: Building, as: 'building', attributes: ['id', 'name'] }],
-    raw: true,
-    nest: true,
-  });
+  const rooms = await roomRepository.findRoomsForStats(where);
 
   const byStatus = { available: 0, occupied: 0, locked: 0 };
   const byBuilding = {};
