@@ -2,7 +2,7 @@ const { Pinecone } = require('@pinecone-database/pinecone');
 const { getRuntimeConfig } = require('./runtimeConfig');
 
 let pineconeClient = null;
-const KNOWLEDGE_NAMESPACE = "public";
+const KNOWLEDGE_NAMESPACE = "__default__";
 
 const getPineconeClient = () => {
   if (!pineconeClient) {
@@ -20,6 +20,6 @@ const getPineconeIndex = () => {
   return client.index(pinecone.index);
 };
 
-const getPineconeKnowledgeIndex = () => getPineconeIndex().namespace(KNOWLEDGE_NAMESPACE);
+const getPineconeKnowledgeIndex = () => getPineconeIndex();
 
 module.exports = { getPineconeClient, getPineconeIndex, getPineconeKnowledgeIndex, KNOWLEDGE_NAMESPACE };

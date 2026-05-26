@@ -1,5 +1,5 @@
 const { embeddingModel } = require('../config/gemini');
-const { getPineconeIndex, getPineconeKnowledgeIndex, KNOWLEDGE_NAMESPACE } = require('../config/pinecone');
+const { getPineconeKnowledgeIndex, KNOWLEDGE_NAMESPACE } = require('../config/pinecone');
 const { sequelize } = require('../config/db');
 const { QueryTypes } = require('sequelize');
 
@@ -106,14 +106,27 @@ async function upsertBatch(index, vectors) {
   }
 }
 
+function isPineconeNotFoundError(error) {
+  return error?.status === 404
+    || error?.statusCode === 404
+    || /HTTP status 404/i.test(error?.message || "");
+}
+
 async function clearIndexNamespace(index, namespaceName) {
   console.log(`[KnowledgeSync] Clearing Pinecone namespace: ${namespaceName}`);
-  await index.deleteAll();
+  try {
+    await index.deleteAll();
+  } catch (error) {
+    if (isPineconeNotFoundError(error)) {
+      console.log(`[KnowledgeSync] Pinecone namespace not found, skipping clear: ${namespaceName}`);
+      return;
+    }
+    throw error;
+  }
   console.log(`[KnowledgeSync] Pinecone namespace cleared: ${namespaceName}`);
 }
 
-async function clearKnowledgeIndexes(defaultIndex, knowledgeIndex) {
-  await clearIndexNamespace(defaultIndex, "__default__");
+async function clearKnowledgeIndexes(knowledgeIndex) {
   await clearIndexNamespace(knowledgeIndex, KNOWLEDGE_NAMESPACE);
 }
 
@@ -304,11 +317,10 @@ async function fetchUniversityBatch(cursor, limit) {
  * Sync all searchable knowledge from PostgreSQL to Pinecone.
  */
 async function syncKnowledge() {
-  const defaultIndex = getPineconeIndex();
   const index = getPineconeKnowledgeIndex();
   let totalUpserted = 0;
 
-  await clearKnowledgeIndexes(defaultIndex, index);
+  await clearKnowledgeIndexes(index);
 
   totalUpserted += await syncEntityInBatches(index, {
     entityName: "Buildings",
