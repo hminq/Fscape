@@ -10,10 +10,6 @@ const sequelize = database.mode === "url"
       logging: false,
       dialectOptions: {
         connectTimeout: 5000,
-        ssl: {
-          require: true,
-          rejectUnauthorized: false,
-        },
       },
     })
   : database.mode === "sqlite"
